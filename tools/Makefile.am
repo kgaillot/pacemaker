@@ -16,12 +16,7 @@ endif
 noinst_HEADERS		= crm_mon.h 		\
 			  crm_resource.h
 
-pcmkdir			= $(datadir)/$(PACKAGE)
-pcmk_DATA		= report.common 	\
-			  report.collector
-
-sbin_SCRIPTS		= crm_report 	\
-			  crm_standby 	\
+sbin_SCRIPTS		= crm_standby 	\
 			  crm_master 	\
 			  crm_failcount
 if BUILD_CIBSECRETS
@@ -43,6 +38,7 @@ sbin_PROGRAMS		= attrd_updater \
 			  crm_error 	\
 			  crm_mon 	\
 			  crm_node 	\
+			  crm_report 	\
 			  crm_resource 	\
 			  crm_rule 	\
 			  crm_shadow 	\
@@ -72,6 +68,9 @@ cibadmin_SOURCES	= cibadmin.c
 cibadmin_LDADD = $(top_builddir)/lib/pacemaker/libpacemaker.la
 cibadmin_LDADD += $(top_builddir)/lib/cib/libcib.la
 cibadmin_LDADD += $(top_builddir)/lib/common/libcrmcommon.la
+
+crm_report_SOURCES	= crm_report.c
+crm_report_LDADD	= $(top_builddir)/lib/common/libcrmcommon.la
 
 crm_shadow_SOURCES	= crm_shadow.c
 crm_shadow_LDADD = $(top_builddir)/lib/cib/libcib.la

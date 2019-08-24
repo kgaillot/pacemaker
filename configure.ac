@@ -1947,7 +1947,6 @@ CONFIG_FILES_EXEC([agents/ocf/ClusterMon],
                   [tools/cluster-helper],
                   [tools/crm_failcount],
                   [tools/crm_master],
-                  [tools/crm_report],
                   [tools/crm_standby],
                   [tools/cibsecret],
                   [tools/pcmk_simtimes],
@@ -2070,8 +2069,6 @@ AC_CONFIG_FILES(Makefile                                            \
                 tests/Makefile                                      \
                 tools/Makefile                                      \
                 tools/crm_mon.service                               \
-                tools/report.collector                              \
-                tools/report.common                                 \
                 xml/Makefile                                        \
                 xml/pacemaker-schemas.pc                            \
 )

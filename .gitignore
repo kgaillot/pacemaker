@@ -155,9 +155,7 @@ configure
 /tools/crm_rule
 /tools/crm_standby
 /tools/pcmk_simtimes
-/tools/report.collector
-/tools/report.common
-/xml/rng-helper
+/xml/version-diff.sh
 
 # Compiled targets and intermediary files
 *.o
@@ -347,6 +345,8 @@ pacemaker_*.info
 /tools/cluster-init
 /tools/crm_mon.upstart
 /test-driver
+/tools/report.collector
+/tools/report.common
 /xml/assets
 /xml/crm.dtd
 /xml/version-diff.sh
