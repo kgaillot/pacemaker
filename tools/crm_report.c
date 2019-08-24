@@ -9,15 +9,538 @@
 
 #include <crm_internal.h>
 
+#include <stdio.h>
+#include <stdbool.h>
+#include <string.h>
+#include <glib.h>
+
+#include <crm/crm.h>
+#include <crm/common/cmdline_internal.h>
+#include <crm/common/output.h>
+
+/*
+ * Command-line option parsing
+ */
+
+#define SUMMARY "crm_report - Collect an archive of information needed to report cluster problems"
+
+#define HELP_FOOTER \
+    "crm_report works best when run from a cluster node on a running cluster,\n"    \
+    "but can be run from a stopped cluster node or a Pacemaker Remote node.\n\n"    \
+    "If neither --nodes nor --single-node is given, crm_report will guess the\n"    \
+    "node list, but may have trouble detecting Pacemaker Remote nodes.\n"           \
+    "Unless --single-node is given, the node names (whether specified by --nodes\n" \
+    "or detected automatically) must be resolvable and reachable via the command\n" \
+    "specified by -e/--rsh using the user specified by -u/--user.\n\n"              \
+    "Examples:\n"                                                                   \
+    "   crm_report -f \"2011-12-14 13:05:00\"    unexplained-apache-failure\n"      \
+    "   crm_report -f 2011-12-14 -t 2011-12-15 something-that-took-multiple-days\n" \
+    "   crm_report -f 13:05:00   -t 13:12:00   brief-outage"
+
+#define DEFAULT_SANITIZE_PATTERNS   "passw.*"
+#define DEFAULT_LOG_PATTERNS        "CRIT: ERROR:"
+#define DEFAULT_REMOTE_USER         "root"
+#define DEFAULT_REMOTE_SHELL        "ssh -T"
+#define DEFAULT_MAX_DEPTH           5
+#define DEFAULT_MAX_DEPTH_S         "5"
+
+// for multiple lines of help text
+#define HNL "\n                             "
+
+/* This is comparable to libcrmcluster's cluster_type_e, but we don't want to
+ * link crm_report against libcrmcluster, and the library's not a good fit for
+ * what we need anyway.
+ */
+enum cluster_e {
+    cluster_any = 0,
+    cluster_corosync,
+};
+
+static const char *cluster2str(enum cluster_e cluster_type);
+
+static struct {
+    pcmk__common_args_t *args;
+    GOptionContext *context;
+    gchar **processed_args;
+    pcmk__output_t *out;
+
+    gboolean show_help;
+    gboolean show_features;
+    gboolean no_search;
+    gboolean single_node;
+    gboolean as_dir;
+    gboolean sos;
+    gboolean deprecated;
+    gint depth;
+    gchar *from_time;
+    gchar *to_time;
+    gchar *dest;
+    gchar *user;
+    gchar *shell;
+    gchar *cts_log;
+    gchar **logfile;
+    gchar **analysis;
+    gchar **sanitize;
+    GList *nodes;
+    GList *cts;
+    enum cluster_e cluster_type;
+} options = { NULL, };
+
+// true if str is in strings
+static bool
+str_in(const char *str, const char *strings[])
+{
+    if (str != NULL) {
+        for (int i = 0; strings[i] != NULL; ++i) {
+            if (!strcmp(str, strings[i])) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+#define NODE_OPTIONS    (const char *[]) { "--node", "--nodes", "-n", NULL }
+#define CTS_OPTIONS     (const char *[]) { "--cts", "-T", NULL }
+
+// Add optarg to list, with whitespace splitting into individual items
+static gboolean
+string_list_split_cb(const gchar *option_name, const gchar *optarg,
+                     gpointer data, GError **error)
+{
+    GList **list = NULL;
+
+    if (str_in(option_name, NODE_OPTIONS)) {
+        list = &(options.nodes);
+    } else if (str_in(option_name, CTS_OPTIONS)) {
+        list = &(options.cts);
+    }
+
+    if (list == NULL) {
+        return FALSE;
+    }
+
+    while (*optarg) {
+        size_t n = strcspn(optarg, " \t");
+
+        *list = g_list_prepend(*list, strndup(optarg, n));
+        optarg += n;
+        n = strspn(optarg, " \t");
+        optarg += n;
+    }
+    return TRUE;
+}
+
+static gboolean
+cluster_type_cb(const gchar *option_name, const gchar *optarg,
+                gpointer data, GError **error)
+{
+    const gchar *name = option_name;
+
+    // Get just the option name (without - or --)
+    while (name && (*name == '-')) {
+        ++name;
+    }
+
+    // If -c/--cluster, type is the option argument
+    if (!strcmp(name, "c") || !strcmp(name, "cluster")) {
+        name = optarg;
+    }
+
+    if (!strcmp(name, "C") || !strcmp(name, "corosync")) {
+        options.cluster_type = cluster_corosync;
+    } else {
+        options.cluster_type = cluster_any;
+    }
+    return (options.cluster_type != cluster_any);
+}
+
+static GOptionContext *
+build_arg_context(pcmk__common_args_t *args, GOptionGroup **group)
+{
+    GOptionContext *context = NULL;
+    GOptionEntry main_args[] = {
+        {
+            "features", 0, 0, G_OPTION_ARG_NONE, &(options.show_features),
+            "Show software features and exit",
+            NULL
+        },
+
+        /* For backward compatibility with the original shell script version of
+         * crm_report, accept -v as an alias for --version and -h for --help.
+         */
+        {
+            "version", 'v', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE, &(args->version),
+            NULL, NULL
+        },
+        {
+            "help", 'h', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE, &(options.show_help),
+            NULL, NULL
+        },
+        { NULL }
+    };
+    GOptionEntry reporting_args[] = {
+        {
+            "from", 'f', 0, G_OPTION_ARG_STRING, &(options.from_time),
+            "Extract logs starting at this time" HNL
+                "(as \"YYYY-M-D H:M:S\" including the quotes) (required)",
+            "TIME"
+        },
+        {
+            "to", 't', 0, G_OPTION_ARG_STRING, &(options.to_time),
+            "Extract logs until this time" HNL
+                "(as \"YYYY-M-D H:M:S\" including the quotes; default now)",
+            "TIME"
+        },
+        {
+            "nodes", 'n',  0, G_OPTION_ARG_CALLBACK, string_list_split_cb,
+            "Names of nodes to collect from (default is to" HNL
+                "detect all nodes, if cluster is active locally;" HNL
+                "accepts -n \"a b\" or -n a -n b)",
+            "NODES"
+        },
+        {
+            // --node is accepted as an alias for --nodes
+            "node", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_CALLBACK,
+            string_list_split_cb, NULL, NULL
+        },
+        {
+            "single-node", 'S', 0, G_OPTION_ARG_NONE, &(options.single_node),
+            "Collect data from local node only (this option should be used "
+                "on a cluster node, not a central log host, and should not "
+                "be used with --nodes)",
+            NULL,
+        },
+        {
+            "no-search", 'M', 0, G_OPTION_ARG_NONE, &(options.no_search),
+            "Do not search for cluster logs",
+            NULL,
+        },
+        {
+            "logfile", 'l', 0, G_OPTION_ARG_FILENAME_ARRAY, &(options.logfile),
+            "Log file to collect (in addition to any logs found by" HNL
+                "searching; may be specified multiple times)",
+            "FILE"
+        },
+        {
+            "sanitize", 'p', 0, G_OPTION_ARG_STRING_ARRAY, &(options.sanitize),
+            "Regular expression to match variables to be masked in" HNL
+                "output (in addition to \"" DEFAULT_SANITIZE_PATTERNS "\";" HNL
+                "may be specified multiple times)",
+            "PATTERN"
+        },
+        {
+            "analysis", 'L', 0, G_OPTION_ARG_STRING_ARRAY, &(options.analysis),
+            "Regular expression to match in log files for analysis" HNL
+                "(in addition to \"" DEFAULT_LOG_PATTERNS "\"; may be specified" HNL
+                "multiple times)",
+            "PATTERN"
+        },
+        {
+            "as-directory", 'd', 0, G_OPTION_ARG_NONE, &(options.as_dir),
+            "Leave collected information as un-archived directory",
+            NULL,
+        },
+        {
+            "dest", 0, 0, G_OPTION_ARG_FILENAME, &(options.dest),
+            "Destination directory or file name" HNL
+                "(default \"pcmk-<DATE>\")",
+            "NAME"
+        },
+        {
+            "user", 'u', 0, G_OPTION_ARG_STRING, &(options.user),
+            "User account to use to collect data from other nodes" HNL
+                "(default \"" DEFAULT_REMOTE_USER "\")",
+            "USER"
+        },
+        {
+            "max-depth", 'D', 0, G_OPTION_ARG_INT, &(options.depth),
+            "Search depth to use when attempting to locate files" HNL
+                "(default " DEFAULT_MAX_DEPTH_S ")",
+            "USER"
+        },
+        {
+            "rsh", 'e', 0, G_OPTION_ARG_STRING, &(options.shell),
+            "Command to use to run commands on other nodes" HNL
+                "(default \"" DEFAULT_REMOTE_SHELL "\")",
+            "COMMAND"
+        },
+        {
+            "cluster", 'c', 0, G_OPTION_ARG_CALLBACK, cluster_type_cb,
+            "Force the cluster type instead of detecting" HNL
+                "(currently only \"corosync\" is supported)",
+            "TYPE"
+        },
+        {
+            "corosync", 'C', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK,
+            cluster_type_cb,
+            "Force the cluster type to be corosync",
+            "TYPE"
+        },
+        {
+            "sos-mode", 0, 0, G_OPTION_ARG_NONE, &(options.sos),
+            "Use defaults suitable for being called by sosreport tool" HNL
+                "(behavior subject to change and not useful to end users)",
+            NULL,
+        },
+        { NULL }
+    };
+    GOptionEntry cts_args[] = {
+        {
+            "cts", 'T', 0, G_OPTION_ARG_CALLBACK, string_list_split_cb,
+            "CTS test or tests to extract" HNL
+                "(may be specified multiple times)",
+            "TEST"
+        },
+        {
+            "cts-log", 0, 0, G_OPTION_ARG_FILENAME, &(options.cts_log),
+            "CTS master logfile",
+            "FILE"
+        },
+        { NULL }
+    };
+    GOptionEntry deprecated_args[] = {
+        {
+            "deprecated-s", 's', 0, G_OPTION_ARG_NONE, &(options.deprecated),
+            "Ignored (accepted for backward compatibility)",
+            NULL,
+        },
+        {
+            "deprecated-x", 'x', 0, G_OPTION_ARG_NONE, &(options.deprecated),
+            "Ignored (accepted for backward compatibility)",
+            NULL,
+        },
+        { NULL }
+    };
+
+    context = pcmk__build_arg_context(args, "text (default), xml",  group, NULL);
+    pcmk__add_main_args(context, main_args);
+    pcmk__add_arg_group(context, "reporting", "Reporting options:",
+                        "Show reporting help", reporting_args);
+    pcmk__add_arg_group(context, "cts",
+                        "CTS options (rarely useful to end users):",
+                        "Show CTS help", cts_args);
+    pcmk__add_arg_group(context, "deprecated",
+                        "Deprecated options (to be removed in future release):",
+                        "Show deprecated option help", deprecated_args);
+    g_option_context_set_description(context, HELP_FOOTER);
+    return context;
+}
+
+// Return the number of strings in a glib string vector
+static size_t
+strvlen(gchar **strv)
+{
+    int len = 0;
+
+    if (strv == NULL) {
+        return 0;
+    }
+    while (strv[len++] != NULL);
+    return len - 1;
+}
+
+// Return string vector of strv1 + strv2 (which will be freed)
+static gchar **
+merge_strv(gchar **strv1, gchar **strv2)
+{
+    int strv1_len = strvlen(strv1);
+    int strv2_len = strvlen(strv2);
+    int combined_len = strv1_len + strv2_len + 1; // + 1 for NULL entry
+    int i = 0;
+    gchar **strv_new = NULL;
+
+    if (combined_len == 1) {
+        return NULL;
+    }
+    strv_new = g_malloc0_n(combined_len, sizeof(gchar*));
+
+    for (i = 0; i < strv1_len; ++i) {
+        strv_new[i] = strv1[i];
+    }
+    for (; i < (combined_len - 1); ++i) {
+        strv_new[i] = strv2[i - strv1_len];
+    }
+    strv_new[i] = NULL;
+    g_free(strv1);
+    g_free(strv2);
+    return strv_new;
+}
+
+static void
+parse_args(int argc, char **argv)
+{
+    GError *error = NULL;
+    GOptionGroup *output_group = NULL;
+
+    pcmk__supported_format_t formats[] = {
+        PCMK__SUPPORTED_FORMAT_TEXT,
+        PCMK__SUPPORTED_FORMAT_XML,
+        { NULL, NULL, NULL }
+    };
+
+    options.depth = DEFAULT_MAX_DEPTH;
+
+    options.args = pcmk__new_common_args(SUMMARY);
+    options.context = build_arg_context(options.args, &output_group);
+    pcmk__register_formats(output_group, formats);
+    options.processed_args = pcmk__cmdline_preproc(argv, "ceflnptuDLT");
+    if (!g_option_context_parse_strv(options.context,
+                                     &(options.processed_args), &error)) {
+        fprintf(stderr, "%s: %s\n\n", g_get_prgname(), error->message);
+        fprintf(stderr, "%s",
+                g_option_context_get_help(options.context, TRUE, NULL));
+        crm_exit(CRM_EX_USAGE);
+    }
+
+    if (options.processed_args[1] != NULL) { // [0] is command name
+        if (options.dest != NULL) {
+            g_free(options.dest);
+        }
+        options.dest = g_strdup(options.processed_args[1]);
+        // @TODO warn if additional arguments specified?
+    }
+
+    if (options.user == NULL) {
+        options.user = g_strdup(DEFAULT_REMOTE_USER);
+    }
+    if (options.shell == NULL) {
+        options.shell = g_strdup(DEFAULT_REMOTE_SHELL);
+    }
+    options.sanitize = merge_strv(g_strsplit(DEFAULT_SANITIZE_PATTERNS, " ", -1),
+                                  options.sanitize);
+    options.analysis = merge_strv(g_strsplit(DEFAULT_LOG_PATTERNS, " ", -1),
+                                  options.analysis);
+}
+
+static void
+handle_common_args(int argc, char **argv)
+{
+    int rc = pcmk_rc_ok;
+
+    for (int i = 0; i < options.args->verbosity; ++i) {
+        crm_bump_log_level(argc, argv);
+    }
+
+    rc = pcmk__output_new(&(options.out), options.args->output_ty,
+                          options.args->output_dest, argv);
+    if (rc != pcmk_rc_ok) {
+        fprintf(stderr, "Error creating output format %s: %s\n",
+                options.args->output_ty, pcmk_rc_str(rc));
+        crm_exit(pcmk_rc2exitc(rc));
+    }
+}
+
+
+/*
+ * User messaging
+ */
+
+static void
+log_options(void)
+{
+    // @WIP For now, just print out parsed options
+    printf("Summary: %s\n", options.args->summary? options.args->summary : "(none)");
+    printf("Show version? %s\n", options.args->version? "yes" : "no");
+    printf("Quiet? %s\n", options.args->quiet? "yes" : "no");
+    printf("Verbosity: %d\n", options.args->verbosity);
+    printf("Output type: %s\n", options.args->output_ty? options.args->output_ty : "(none)");
+    printf("Output destination: %s\n", options.args->output_dest? options.args->output_dest : "(none)");
+    printf("Context: %s\n", options.context? "exists" : "does not exist");
+    for (int argi = 0; options.processed_args[argi] != NULL; ++argi) {
+        printf("Processed arg %d: %s\n", argi, options.processed_args[argi]);
+    }
+    printf("Output object: %s\n", options.out? "exists" : "does not exist");
+    printf("Show help? %s\n", options.show_help? "yes" : "no");
+    printf("Show features? %s\n", options.show_features? "yes" : "no");
+    printf("Skip searching? %s\n", options.no_search? "yes" : "no");
+    printf("Single node? %s\n", options.single_node? "yes" : "no");
+    printf("SOS mode? %s\n", options.sos? "yes" : "no");
+    printf("Deprecated option used? %s\n", options.deprecated? "yes" : "no");
+    printf("Times: %s to %s\n", options.from_time? options.from_time : "beginning",
+           options.to_time? options.to_time : "now");
+    printf("Remote user: %s\n", options.user);
+    printf("Remote shell: %s\n", options.shell);
+    printf("Cluster type: %s\n", cluster2str(options.cluster_type));
+    printf("Destination: %s\n", options.dest);
+    printf("Max. search depth: %d\n", options.depth);
+    for (int i = 0; options.logfile && options.logfile[i]; ++i) {
+        printf("Additional log: %s\n", options.logfile[i]);
+    }
+    for (int i = 0; options.sanitize && options.sanitize[i]; ++i) {
+        printf("Sanitize pattern: %s\n", options.sanitize[i]);
+    }
+    for (int i = 0; options.analysis && options.analysis[i]; ++i) {
+        printf("Log pattern: %s\n", options.analysis[i]);
+    }
+    for (GList *nodei = options.nodes; nodei != NULL; nodei = nodei->next) {
+        printf("Node: %s\n", (const char *) nodei->data);
+    }
+    for (GList *ctsi = options.cts; ctsi != NULL; ctsi = ctsi->next) {
+        printf("CTS test: %s\n", (const char *) ctsi->data);
+    }
+    printf("CTS log: %s\n", options.cts_log? options.cts_log : "(none)");
+}
+
+
+/*
+ * Basic utility functions
+ */
+
+static const char *
+cluster2str(enum cluster_e cluster_type)
+{
+    switch (cluster_type) {
+        case cluster_corosync:
+            return "corosync";
+        default:
+            return "any";
+    }
+}
+
+
 /*
  * Main
  */
 
+static crm_exit_t
+finish(crm_exit_t exit_code)
+{
+    g_strfreev(options.processed_args);
+    g_option_context_free(options.context);
+    if (options.out != NULL) {
+        options.out->finish(options.out, exit_code, true, NULL);
+        pcmk__output_free(options.out);
+    }
+
+    g_free(options.from_time);
+    g_free(options.to_time);
+    g_free(options.dest);
+    g_free(options.user);
+    g_free(options.shell);
+    g_free(options.cts_log);
+    g_strfreev(options.logfile);
+    g_strfreev(options.analysis);
+    g_strfreev(options.sanitize);
+    g_list_free_full(options.nodes, free);
+    g_list_free_full(options.cts, free);
+
+    return exit_code;
+}
+
 int
 main(int argc, char **argv)
 {
+    crm_exit_t exit_code = CRM_EX_OK;
+
     crm_log_cli_init("crm_report");
-    return CRM_EX_UNIMPLEMENT_FEATURE;
+    parse_args(argc, argv);
+    handle_common_args(argc, argv);
+    log_options();
+
+    // @WIP Nothing is implemented yet
+    exit_code = CRM_EX_UNIMPLEMENT_FEATURE;
+    return finish(exit_code);
 }
 
 /*
@@ -25,9 +548,6 @@ main(int argc, char **argv)
 
 host=`uname -n`
 shorthost=`echo $host | sed s:\\\\..*::`
-if [ -z $verbose ]; then
-    verbose=0
-fi
 
 # Target Files
 EVENTS_F=events.txt
@@ -108,7 +628,7 @@ log() {
 }
 
 debug() {
-    if [ $verbose -gt 0 ]; then
+    if [ $options.args->verbosity -gt 0 ]; then
 	log "Debug: $*"
     else
         record "Debug: $*"
@@ -199,7 +719,7 @@ detect_daemon_dir() {
         return
     fi
 
-    for f in $(find / -maxdepth $maxdepth -type f -name pacemaker-schedulerd -o -name cts-exec-helper); do
+    for f in $(find / -maxdepth $options.depth -type f -name pacemaker-schedulerd -o -name cts-exec-helper); do
         d=$(dirname "$f")
         found_dir "daemons" "$d"
         return
@@ -223,7 +743,7 @@ detect_cib_dir() {
 
     info "Searching for where Pacemaker keeps config information... this may take a while"
     # TODO: What about false positives where someone copied the CIB?
-    for f in $(find / -maxdepth $maxdepth -type f -name cib.xml); do
+    for f in $(find / -maxdepth $options.depth -type f -name cib.xml); do
         d=$(dirname $f)
         found_dir "config files" "$d"
         return
@@ -259,7 +779,7 @@ detect_pe_dir() {
     fi
 
     info "Searching for where Pacemaker keeps scheduler inputs... this may take a while"
-    for d in $(find / -maxdepth $maxdepth -type d -name pengine); do
+    for d in $(find / -maxdepth $options.depth -type d -name pengine); do
         found_dir "scheduler inputs" "$d"
         return
     done
@@ -274,7 +794,7 @@ detect_host() {
 	CRM_STATE_DIR=$local_state_dir/run/crm
     else
         info "Searching for where Pacemaker keeps runtime data... this may take a while"
-	for d in `find / -maxdepth $maxdepth -type d -name run`; do
+	for d in `find / -maxdepth $options.depth -type d -name run`; do
 	    local_state_dir=`dirname $d`
 	    CRM_STATE_DIR=$d/crm
 	    break
@@ -844,7 +1364,7 @@ get_cluster_type() {
     else
         # We still don't know. This might be a Pacemaker Remote node,
         # or the configuration might be in a nonstandard location.
-        stack="any"
+        stack="cluster_any"
     fi
 
     debug "Detected the '$stack' cluster stack"
@@ -869,7 +1389,7 @@ find_cluster_cf() {
 	    done
 	    if [ -z "$best_file" ]; then
 		debug "Looking for corosync configuration file. This may take a while..."
-		for f in `find / -maxdepth $maxdepth -type f -name corosync.conf`; do
+		for f in `find / -maxdepth $options.depth -type f -name corosync.conf`; do
 		    best_file=$f
 		    break
 		done
@@ -877,7 +1397,7 @@ find_cluster_cf() {
 	    debug "Located corosync config file: $best_file"
 	    echo "$best_file"
 	    ;;
-	any)
+	cluster_any)
 	    # Cluster type is undetermined. Don't complain, because this
 	    # might be a Pacemaker Remote node.
 	    ;;
@@ -1655,20 +2175,20 @@ mkdir -p $REPORT_HOME/$REPORT_TARGET
 cd $REPORT_HOME/$REPORT_TARGET
 
 case $CLUSTER in
-    any) cluster=`get_cluster_type`;;
-    *) cluster=$CLUSTER;;
+    cluster_any) options.cluster_type=`get_cluster_type`;;
+    *) options.cluster_type=$CLUSTER;;
 esac
 
-cluster_cf=`find_cluster_cf $cluster`
+cluster_cf=`find_cluster_cf $options.cluster_type`
 
 # If cluster stack is still "any", this might be a Pacemaker Remote node,
 # so don't complain in that case.
-if [ -z "$cluster_cf" ] && [ $cluster != "any" ]; then
+if [ -z "$cluster_cf" ] && [ $options.cluster_type != "cluster_any" ]; then
    warning "Could not determine the location of your cluster configuration"
 fi
 
 if [ "$SEARCH_LOGS" = "1" ]; then
-    logfiles=$(get_logfiles "$cluster" "$cluster_cf" | sort -u)
+    logfiles=$(get_logfiles "$options.cluster_type" "$cluster_cf" | sort -u)
 fi
 logfiles="$(trim "$logfiles $EXTRA_LOGS")"
 
@@ -1682,17 +2202,17 @@ if [ -z "$logfiles" ]; then
     info "No log files found or specified with --logfile /some/path"
 fi
 
-debug "Config: $cluster ($cluster_cf) $logfiles"
+debug "Config: $options.cluster_type ($cluster_cf) $logfiles"
 
-sys_info $cluster $PACKAGES > $SYSINFO_F
-essential_files $cluster | check_perms  > $PERMISSIONS_F 2>&1
-getconfig $cluster "$REPORT_HOME/$REPORT_TARGET" "$cluster_cf" "$CRM_CONFIG_DIR/$CIB_F" "/etc/drbd.conf" "/etc/drbd.d" "/etc/booth"
+sys_info $options.cluster_type $PACKAGES > $SYSINFO_F
+essential_files $options.cluster_type | check_perms  > $PERMISSIONS_F 2>&1
+getconfig $options.cluster_type "$REPORT_HOME/$REPORT_TARGET" "$cluster_cf" "$CRM_CONFIG_DIR/$CIB_F" "/etc/drbd.conf" "/etc/drbd.d" "/etc/booth"
 
 getpeinputs    $LOG_START $LOG_END $REPORT_HOME/$REPORT_TARGET
 getbacktraces  $LOG_START $LOG_END > $REPORT_HOME/$REPORT_TARGET/$BT_F
 getblackboxes  $LOG_START $LOG_END $REPORT_HOME/$REPORT_TARGET
 
-case $cluster in
+case $options.cluster_type in
     corosync)
 	if is_running corosync; then
             corosync-blackbox >corosync-blackbox-live.txt 2>&1
@@ -1778,92 +2298,11 @@ fi
 
 ## crm_report.in
 
-TEMP=`@GETOPT_PATH@			\
-    -o hv?xl:f:t:n:T:L:p:c:dSCu:D:MVse:	\
-    --long help,corosync,cts:,cts-log:,dest:,node:,nodes:,from:,to:,sos-mode,logfile:,as-directory,single-node,cluster:,user:,max-depth:,version,features,rsh:	\
-    -n 'crm_report' -- "$@"`
-# The quotes around $TEMP are essential
-eval set -- "$TEMP"
-
 progname=$(basename "$0")
-rsh="ssh -T"
-tests=""
-nodes=""
-compress=1
-cluster="any"
-ssh_user="root"
-search_logs=1
-sos_mode=0
 report_data=`dirname $0`
-maxdepth=5
-
-extra_logs=""
-sanitize_patterns="passw.*"
-log_patterns="CRIT: ERROR:"
-
-usage() {
-cat<<EOF
-$progname - Create archive of everything needed when reporting cluster problems
-
-
-Usage: $progname [options] [DEST]
-
-Required option:
-  -f, --from TIME       time prior to problems beginning
-                        (as "YYYY-M-D H:M:S" including the quotes)
-
-Options:
-  -V                    increase verbosity (may be specified multiple times)
-  -h, --help            display this message
-  -v, --version         display software version
-  --features            display software features
-  -t, --to TIME         time at which all problems were resolved
-                        (as "YYYY-M-D H:M:S" including the quotes; default "now")
-  -T, --cts TEST        CTS test or set of tests to extract
-  --cts-log             CTS master logfile
-  -n, --nodes NODES     node names for this cluster (only needed if cluster is
-                        not active on this host; accepts -n "a b" or -n a -n b)
-  -M                    do not search for cluster logs
-  -l, --logfile FILE    log file to collect (in addition to detected logs if -M
-                        is not specified; may be specified multiple times)
-  -p PATT               additional regular expression to match variables to be
-                        masked in output (default: "passw.*")
-  -L PATT               additional regular expression to match in log files for
-                        analysis (default: $log_patterns)
-  -S, --single-node     don't attempt to collect data from other nodes
-  -c, --cluster TYPE    force the cluster type instead of detecting
-                        (currently only corosync is supported)
-  -C, --corosync        force the cluster type to be corosync
-  -u, --user USER       username to use when collecting data from other nodes
-                        (default root)
-  -D, --max-depth       search depth to use when attempting to locate files
-  -e, --rsh             command to use to run commands on other nodes
-                        (default ssh -T)
-  -d, --as-directory    leave result as a directory tree instead of archiving
-  --sos-mode            use defaults suitable for being called by sosreport tool
-                        (behavior subject to change and not useful to end users)
-  DEST, --dest DEST     custom destination directory or file name
-
-$progname works best when run from a cluster node on a running cluster,
-but can be run from a stopped cluster node or a Pacemaker Remote node.
-
-If neither --nodes nor --single-node is given, $progname will guess the
-node list, but may have trouble detecting Pacemaker Remote nodes.
-Unless --single-node is given, the node names (whether specified by --nodes
-or detected automatically) must be resolvable and reachable via the command
-specified by -e/--rsh using the user specified by -u/--user.
-
-Examples:
-   $progname -f "2011-12-14 13:05:00" unexplained-apache-failure
-   $progname -f 2011-12-14 -t 2011-12-15 something-that-took-multiple-days
-   $progname -f 13:05:00   -t 13:12:00   brief-outage
-EOF
-}
 
 case "$1" in
-    -v|--version)   echo "$progname @VERSION@-@BUILD_VERSION@"; exit 0;;
     --features)     echo "@VERSION@-@BUILD_VERSION@: @PCMK_FEATURES@"; exit 0;;
-    --|-h|--help) usage; exit 0;;
 esac
 
 # Prefer helpers in the same directory if they exist, to simplify development
@@ -1875,37 +2314,14 @@ fi
 
 . $report_data/report.common
 
-while true; do
-    case "$1" in
-	-x) set -x; shift;;
-	-V) verbose=`expr $verbose + 1`; shift;;
-	-T|--cts) tests="$tests $2"; shift; shift;;
-	   --cts-log) ctslog="$2"; shift; shift;;
-	-f|--from) start_time=`get_time "$2"`; shift; shift;;
-	-t|--to) end_time=`get_time "$2"`; shift; shift;;
-	-n|--node|--nodes) nodes="$nodes $2"; shift; shift;;
-	-S|--single-node) nodes="$host"; shift;;
-	-l|--logfile) extra_logs="$extra_logs $2"; shift; shift;;
-	-p) sanitize_patterns="$sanitize_patterns $2"; shift; shift;;
-	-L) log_patterns="$log_patterns `echo $2 | sed 's/ /\\\W/g'`"; shift; shift;;
-	-d|--as-directory) compress=0; shift;;
-	-C|--corosync)  cluster="corosync";  shift;;
-	-c|--cluster)   cluster="$2"; shift; shift;;
-	-e|--rsh)       rsh="$2";     shift; shift;;
-	-u|--user)      ssh_user="$2"; shift; shift;;
-        -D|--max-depth)     maxdepth="$2"; shift; shift;;
-	-M) search_logs=0; shift;;
-        --sos-mode) sos_mode=1; nodes="$host"; shift;;
-	--dest) DESTDIR=$2; shift; shift;;
-	--) if [ ! -z $2 ]; then DESTDIR=$2; fi; break;;
-	-h|--help) usage; exit 0;;
-	# Options for compatibility with hb_report
-	-s) shift;;
-
-	*) echo "Unknown argument: $1"; usage; exit 1;;
-    esac
-done
-
+start_time=`get_time "$options.from_time"`
+end_time=`get_time "$options.to_time"`
+if options.single_node; then
+    options.nodes="$host"
+fi
+if options.sos; then
+    options.nodes="$host"
+fi
 
 collect_data() {
     label="$1"
@@ -1913,12 +2329,12 @@ collect_data() {
     end=`expr $3 + 10`
     masterlog=$4
 
-    if [ "x$DESTDIR" != x ]; then
-	echo $DESTDIR | grep -e "^/" -qs
+    if [ "x$options.dest" != x ]; then
+	echo $options.dest | grep -e "^/" -qs
 	if [ $? = 0 ]; then
-	    l_base=$DESTDIR
+	    l_base=$options.dest
 	else
-	    l_base="`pwd`/$DESTDIR"
+	    l_base="`pwd`/$options.dest"
 	fi
 	debug "Using custom scratch dir: $l_base"
 	r_base=`basename $l_base`
@@ -1936,7 +2352,7 @@ collect_data() {
 	dumplogset "$masterlog" $start $end > "$l_base/$HALOG_F"
     fi
 
-    for node in $nodes; do
+    for node in $options.nodes; do
 	cat <<EOF >$l_base/.env
 LABEL="$label"
 REPORT_HOME="$r_base"
@@ -1945,14 +2361,14 @@ REPORT_TARGET="$node"
 LOG_START=$start
 LOG_END=$end
 REMOVE=1
-SANITIZE="$sanitize_patterns"
-CLUSTER=$cluster
-LOG_PATTERNS="$log_patterns"
-EXTRA_LOGS="$extra_logs"
-SEARCH_LOGS=$search_logs
-SOS_MODE=$sos_mode
-verbose=$verbose
-maxdepth=$maxdepth
+SANITIZE="$options.sanitize"
+CLUSTER=$options.cluster_type
+LOG_PATTERNS="$options.analysis"
+EXTRA_LOGS="$options.logfile"
+SEARCH_LOGS=($options.no_search? 0 : 1)
+SOS_MODE=$options.sos
+verbose=$options.args->verbosity
+maxdepth=$options.depth
 EOF
 
 	if [ $host = $node ]; then
@@ -1963,7 +2379,7 @@ EOF
 	    bash $l_base/collector
 	else
 	    cat $l_base/.env $report_data/report.common $report_data/report.collector \
-		| $rsh -l $ssh_user $node -- "mkdir -p $r_base; cat > $r_base/collector; bash $r_base/collector" | (cd $l_base && tar mxf -)
+		| $options.shell -l $options.user $node -- "mkdir -p $r_base; cat > $r_base/collector; bash $r_base/collector" | (cd $l_base && tar mxf -)
 	fi
     done
 
@@ -1972,17 +2388,17 @@ EOF
 	node_events $l_base/$HALOG_F > $l_base/$EVENTS_F
     fi
 
-    for node in $nodes; do
+    for node in $options.nodes; do
 	cat $l_base/$node/$ANALYSIS_F >> $l_base/$ANALYSIS_F
 	if [ -s $l_base/$node/$EVENTS_F ]; then
 	    cat $l_base/$node/$EVENTS_F >> $l_base/$EVENTS_F
 	elif [ -s $l_base/$HALOG_F ]; then
-	    awk "\$4==\"$nodes\"" $l_base/$EVENTS_F >> $l_base/$n/$EVENTS_F
+	    awk "\$4==\"$options.nodes\"" $l_base/$EVENTS_F >> $l_base/$n/$EVENTS_F
 	fi
     done
 
     log " "
-    if [ $compress = 1 ]; then
+    if [ $options.as_dir -ne 1 ]; then
 	fname=`shrink $l_base`
 	rm -rf $l_base
 	log "Collected results are available in $fname"
@@ -2043,7 +2459,7 @@ diffcheck() {
 # remove duplicates if files are same, make links instead
 #
 consolidate() {
-    for n in $nodes; do
+    for n in $options.nodes; do
 	if [ -f $1/$2 ]; then
 	    rm $1/$n/$2
 	else
@@ -2056,7 +2472,7 @@ consolidate() {
 analyze_one() {
     rc=0
     node0=""
-    for n in $nodes; do
+    for n in $options.nodes; do
 	if [ "$node0" ]; then
 	    diffcheck $1/$node0/$2 $1/$n/$2
 	    rc=$(($rc+$?))
@@ -2085,7 +2501,7 @@ analyze() {
 }
 
 do_cts() {
-    test_sets=`echo $tests | tr ',' ' '`
+    test_sets=`echo $options.cts | tr ',' ' '`
     for test_set in $test_sets; do
 
 	start_time=0
@@ -2110,29 +2526,29 @@ do_cts() {
 	    start_pat="Running test.*\[ *$start_test\]"
 	fi
 
-	if [ x$ctslog = x ]; then
-	    ctslog=`findmsg 1 "$start_pat"`
+	if [ x$options.cts_log = x ]; then
+	    options.cts_log=`findmsg 1 "$start_pat"`
 
-	    if [ x$ctslog = x ]; then
+	    if [ x$options.cts_log = x ]; then
 		fatal "No CTS control file detected"
 	    else
-		log "Using CTS control file: $ctslog"
+		log "Using CTS control file: $options.cts_log"
 	    fi
 	fi
 
-	line=`grep -n "$start_pat" $ctslog | tail -1 | sed 's@:.*@@'`
+	line=`grep -n "$start_pat" $options.cts_log | tail -1 | sed 's@:.*@@'`
 	if [ ! -z "$line" ]; then
-	    start_time=`linetime $ctslog $line`
+	    start_time=`linetime $options.cts_log $line`
 	fi
 
-	line=`grep -n "Running test.*\[ *$end_test\]" $ctslog | tail -1 | sed 's@:.*@@'`
+	line=`grep -n "Running test.*\[ *$end_test\]" $options.cts_log | tail -1 | sed 's@:.*@@'`
 	if [ ! -z "$line" ]; then
-	    end_time=`linetime $ctslog $line`
+	    end_time=`linetime $options.cts_log $line`
 	fi
 
-	if [ -z "$nodes" ]; then
-	    nodes=`grep CTS: $ctslog | grep -v debug: | grep " \* " | sed s:.*\\\*::g | sort -u  | tr '\\n' ' '`
-	    log "Calculated node list: $nodes"
+	if [ -z "$options.nodes" ]; then
+	    options.nodes=`grep CTS: $options.cts_log | grep -v debug: | grep " \* " | sed s:.*\\\*::g | sort -u  | tr '\\n' ' '`
+	    log "Calculated node list: $options.nodes"
 	fi
 
 	if [ $end_time -lt $start_time ]; then
@@ -2142,7 +2558,7 @@ do_cts() {
 
 	if [ $start_time != 0 ];then
 	    log "$msg (`time2str $start_time` to `time2str $end_time`)"
-	    collect_data $label $start_time $end_time $ctslog
+	    collect_data $label $start_time $end_time $options.cts_log
 	else
 	    fatal "$msg failed: not found"
 	fi
@@ -2189,17 +2605,17 @@ getnodes() {
     # TODO: Look for something like crm_update_peer
 }
 
-if [ $compress -eq 1 ]; then
+if [ $options.as_dir -ne 1 ]; then
     require_tar
 fi
 
-if [ "x$tests" != "x" ]; then
+if [ "x$options.cts" != "x" ]; then
     do_cts
 
 elif [ "x$start_time" != "x" ]; then
     masterlog=""
 
-    if [ -z "$sanitize_patterns" ]; then
+    if [ -z "$options.sanitize" ]; then
 	log "WARNING: The tarball produced by this program may contain"
 	log "         sensitive information such as passwords."
 	log ""
@@ -2214,22 +2630,22 @@ elif [ "x$start_time" != "x" ]; then
     fi
 
     # If user didn't specify a cluster stack, make a best guess if possible.
-    if [ -z "$cluster" ] || [ "$cluster" = "any" ]; then
-        cluster=$(get_cluster_type)
+    if [ -z "$options.cluster_type" ] || [ "$options.cluster_type" = "cluster_any" ]; then
+        options.cluster_type=$(get_cluster_type)
     fi
 
     # If user didn't specify node(s), make a best guess if possible.
-    if [ -z "$nodes" ]; then
-	nodes=`getnodes $cluster`
-        if [ -n "$nodes" ]; then
-            log "Calculated node list: $nodes"
+    if [ -z "$options.nodes" ]; then
+	options.nodes=`getnodes $options.cluster_type`
+        if [ -n "$options.nodes" ]; then
+            log "Calculated node list: $options.nodes"
         else
             fatal "Cannot determine nodes; specify --nodes or --single-node"
         fi
     fi
 
     if
-	echo $nodes | grep -qs $host
+	echo $options.nodes | grep -qs $host
     then
 	debug "We are a cluster node"
     else
@@ -2242,7 +2658,7 @@ elif [ "x$start_time" != "x" ]; then
 	end_time=`perl -e 'print time()'`
     fi
     label="pcmk-`date +"%a-%d-%b-%Y"`"
-    log "Collecting data from $nodes (`time2str $start_time` to `time2str $end_time`)"
+    log "Collecting data from $options.nodes (`time2str $start_time` to `time2str $end_time`)"
     collect_data $label $start_time $end_time $masterlog
 else
     fatal "Not sure what to do, no tests or time ranges to extract"
