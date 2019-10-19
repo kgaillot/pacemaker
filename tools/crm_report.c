@@ -418,6 +418,10 @@ handle_common_args(int argc, char **argv)
 {
     int rc = pcmk_rc_ok;
 
+    if (options.show_help) {
+        printf("%s", g_option_context_get_help(options.context, TRUE, NULL));
+    }
+
     for (int i = 0; i < options.args->verbosity; ++i) {
         crm_bump_log_level(argc, argv);
     }
@@ -428,6 +432,16 @@ handle_common_args(int argc, char **argv)
         fprintf(stderr, "Error creating output format %s: %s\n",
                 options.args->output_ty, pcmk_rc_str(rc));
         crm_exit(pcmk_rc2exitc(rc));
+    }
+
+    if (options.args->version) {
+        options.out->version(options.out, false);
+        crm_exit(CRM_EX_OK);
+    }
+
+    if (options.show_features) {
+        options.out->version(options.out, true);
+        crm_exit(CRM_EX_OK);
     }
 }
 
@@ -2300,10 +2314,6 @@ fi
 
 progname=$(basename "$0")
 report_data=`dirname $0`
-
-case "$1" in
-    --features)     echo "@VERSION@-@BUILD_VERSION@: @PCMK_FEATURES@"; exit 0;;
-esac
 
 # Prefer helpers in the same directory if they exist, to simplify development
 if [ ! -f $report_data/report.common ]; then
