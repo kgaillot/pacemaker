@@ -10,6 +10,7 @@
 #include <crm_internal.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
 #include <time.h>
@@ -752,6 +753,37 @@ create_report_home(const char *default_base_name)
     }
 }
 
+/*!
+ * \internal
+ * \brief Find the first command in a list that is on the path
+ *
+ * \param[in] cmd  A command to search for
+ * \param[in] ...  If previous attempt failed, another command to search for
+ *
+ * \return The first of the arguments found on the path
+ */
+static const char *
+first_command(const char *cmd, ...)
+{
+    va_list ap;
+
+    va_start(ap, cmd);
+    for (; cmd != NULL; cmd = va_arg(ap, const char *)) {
+        char *call;
+        int rc;
+
+        call = crm_strdup_printf("which %s >/dev/null 2>/dev/null", cmd);
+        rc = system(call);
+        free(call);
+
+        if ((rc >= 0) && WIFEXITED(rc) && (WEXITSTATUS(rc) == 0)) {
+            return cmd;
+        }
+    }
+    va_end(ap);
+    return NULL;
+}
+
 static void
 time2str(char *s, size_t n, const char *fmt, time_t t)
 {
@@ -837,6 +869,12 @@ main(int argc, char **argv)
     set_report(true);
     log_options();
 
+    // Check early if tar is unavailable so we don't waste effort
+    if (!options.as_dir
+        && (first_command("tar", NULL) == NULL)) {
+        fatal("Required program 'tar' not found, please install and re-run");
+    }
+
     // @WIP Nothing is implemented yet
     exit_code = CRM_EX_UNIMPLEMENT_FEATURE;
     return finish(exit_code);
@@ -901,13 +939,6 @@ SYSLOGS="
 
 # Whether pacemaker-remoted was found (0 = yes, 1 = no, -1 = haven't looked yet)
 REMOTED_STATUS=-1
-
-require_tar() {
-    which tar >/dev/null 2>&1
-    if [ $? -ne 0 ]; then
-        fatal "Required program 'tar' not found, please install and re-run"
-    fi
-}
 
 # check if process of given substring in its name does exist;
 # only look for processes originated by user 0 (by UID), "@CRM_DAEMON_USER@"
@@ -1273,16 +1304,6 @@ node_events() {
   fi
 }
 
-pickfirst() {
-    for x; do
-	which $x >/dev/null 2>&1 && {
-	    echo $x
-	    return 0
-	}
-    done
-    return 1
-}
-
 shrink() {
     olddir=$PWD
     dir=`dirname $1`
@@ -1291,7 +1312,7 @@ shrink() {
     target=$1.tar
     tar_options="cf"
 
-    variant=`pickfirst bzip2 gzip xz false`
+    variant=`first_command bzip2 gzip xz false NULL`
     case $variant in
 	bz*)
 	    tar_options="jcf"
@@ -1582,23 +1603,13 @@ getcfvar() {
     esac
 }
 
-pickfirst() {
-    for x; do
-	which $x >/dev/null 2>&1 && {
-	    echo $x
-	    return 0
-	}
-    done
-    return 1
-}
-
 #
 # figure out the cluster type, depending on the process list
 # and existence of configuration files
 #
 get_cluster_type() {
     if is_running corosync; then
-	tool=`pickfirst corosync-objctl corosync-cmapctl`
+	tool=`first_command corosync-objctl corosync-cmapctl NULL`
 	case $tool in
 	    *objctl) quorum=`$tool -a | grep quorum.provider | sed 's@.*=\s*@@'`;;
 	    *cmapctl) quorum=`$tool | grep quorum.provider | sed 's@.*=\s*@@'`;;
@@ -2402,8 +2413,6 @@ collect_logs() {
     trap "" 0
 }
 
-require_tar
-
 debug "Initializing $REPORT_TARGET subdir"
 if [ "$REPORT_MASTER" != "$REPORT_TARGET" ]; then
   if [ -e $report_home/$REPORT_TARGET ]; then
@@ -2458,7 +2467,7 @@ case $options.cluster_type in
 	if is_running corosync; then
             corosync-blackbox >corosync-blackbox-live.txt 2>&1
 #           corosync-fplay > corosync-blackbox.txt
-            tool=`pickfirst corosync-objctl corosync-cmapctl`
+            tool=`first_command corosync-objctl corosync-cmapctl NULL`
             case $tool in
                 *objctl)  $tool -a > corosync.dump  2>/dev/null;;
                 *cmapctl) $tool    > corosync.dump  2>/dev/null;;
@@ -2802,10 +2811,6 @@ getnodes() {
     # 3. logs
     # TODO: Look for something like crm_update_peer
 }
-
-if [ $options.as_dir -ne 1 ]; then
-    require_tar
-fi
 
 if [ "x$options.cts" != "x" ]; then
     do_cts
