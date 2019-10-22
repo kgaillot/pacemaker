@@ -20,6 +20,9 @@
 #include <crm/common/output.h>
 #include <crm/common/iso8601.h>
 
+static char *host = NULL;
+static char *shorthost = NULL;
+
 /*
  * Command-line option parsing
  */
@@ -557,6 +560,32 @@ cluster2str(enum cluster_e cluster_type)
     }
 }
 
+// \return Standard Pacemaker return code
+static int
+detect_hostname(void)
+{
+    char *dot = NULL;
+
+    host = pcmk_hostname();
+    if ((host == NULL) || (*host == '.')) {
+        return ENXIO;
+    }
+
+    dot = strchr(host, '.');
+    if (dot == NULL) {
+        shorthost = strdup(host);
+    } else {
+        shorthost = strndup(host, (dot - host));
+    }
+    if (shorthost == NULL) {
+        return ENXIO;
+    }
+
+    // @TODO If the cluster is live, also get host's node name in cluster
+
+    return pcmk_rc_ok;
+}
+
 static void
 time2str(char *s, size_t n, const char *fmt, time_t t)
 {
@@ -598,6 +627,9 @@ finish(crm_exit_t exit_code)
     g_list_free_full(options.nodes, free);
     g_list_free_full(options.cts, free);
 
+    free(host);
+    free(shorthost);
+
     return exit_code;
 }
 
@@ -610,14 +642,29 @@ main(int argc, char **argv)
     parse_args(argc, argv);
     handle_common_args(argc, argv);
 
+    if (detect_hostname() != pcmk_rc_ok) {
+        options.out->err(options.out, "Unable to get local hostname");
+        return finish(CRM_EX_OSERR);
+    }
+
     if (options.to_time == 0) {
         options.to_time = time(NULL);
     }
 
-    // @WIP For now, just print from/to times
+    if (options.single_node || options.sos) {
+        if (options.nodes != NULL) {
+            // @TODO error and exit CRM_EX_USAGE (at a new series release)
+            options.out->info(options.out,
+                              "WARNING: --nodes is ignored with %s",
+                              options.single_node? "--single-node" : "--sos-mode");
+            g_list_free_full(options.nodes, free);
+        }
+        options.nodes = g_list_prepend(NULL, strdup(host));
+    }
+
+    // @WIP Just print hostname for now
     log_options();
-    printf("from=%lld to=%lld\n",
-           (long long) options.from_time, (long long) options.to_time);
+    printf("Host name is %s (%s for short)\n", host, shorthost);
 
     // @WIP Nothing is implemented yet
     exit_code = CRM_EX_UNIMPLEMENT_FEATURE;
@@ -626,9 +673,6 @@ main(int argc, char **argv)
 
 /*
 ## report.common.in
-
-host=`uname -n`
-shorthost=`echo $host | sed s:\\\\..*::`
 
 # Target Files
 EVENTS_F=events.txt
@@ -2365,15 +2409,6 @@ elif [ "$REPORT_MASTER" != "$REPORT_TARGET" ]; then
 fi
 
 ## crm_report.in
-
-progname=$(basename "$0")
-
-if options.single_node; then
-    options.nodes="$host"
-fi
-if options.sos; then
-    options.nodes="$host"
-fi
 
 collect_data() {
     label="$1"
