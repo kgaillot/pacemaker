@@ -12,11 +12,13 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <time.h>
 #include <glib.h>
 
 #include <crm/crm.h>
 #include <crm/common/cmdline_internal.h>
 #include <crm/common/output.h>
+#include <crm/common/iso8601.h>
 
 /*
  * Command-line option parsing
@@ -72,8 +74,8 @@ static struct {
     gboolean sos;
     gboolean deprecated;
     gint depth;
-    gchar *from_time;
-    gchar *to_time;
+    time_t from_time;
+    time_t to_time;
     gchar *dest;
     gchar *user;
     gchar *shell;
@@ -155,6 +157,31 @@ cluster_type_cb(const gchar *option_name, const gchar *optarg,
     return (options.cluster_type != cluster_any);
 }
 
+// Store user-supplied ISO 8601 date/time argument as time_t
+static gboolean
+datetime_cb(const gchar *option_name, const gchar *optarg, gpointer data,
+            GError **error)
+{
+    time_t *result;
+    crm_time_t *t;
+
+    if (!strcmp(option_name, "-f") || !strcmp(option_name, "--from")) {
+        result = &(options.from_time);
+    } else if (!strcmp(option_name, "-t") || !strcmp(option_name, "--to")) {
+        result = &(options.to_time);
+    } else {
+        return FALSE;
+    }
+
+    t = crm_time_new(optarg);
+    if (t == NULL) {
+        return FALSE;
+    }
+
+    *result = (time_t) crm_time_get_seconds_since_epoch(t);
+    return TRUE;
+}
+
 static GOptionContext *
 build_arg_context(pcmk__common_args_t *args, GOptionGroup **group)
 {
@@ -181,13 +208,13 @@ build_arg_context(pcmk__common_args_t *args, GOptionGroup **group)
     };
     GOptionEntry reporting_args[] = {
         {
-            "from", 'f', 0, G_OPTION_ARG_STRING, &(options.from_time),
+            "from", 'f', 0, G_OPTION_ARG_CALLBACK, datetime_cb,
             "Extract logs starting at this time" HNL
                 "(as \"YYYY-M-D H:M:S\" including the quotes) (required)",
             "TIME"
         },
         {
-            "to", 't', 0, G_OPTION_ARG_STRING, &(options.to_time),
+            "to", 't', 0, G_OPTION_ARG_CALLBACK, datetime_cb,
             "Extract logs until this time" HNL
                 "(as \"YYYY-M-D H:M:S\" including the quotes; default now)",
             "TIME"
@@ -411,6 +438,13 @@ parse_args(int argc, char **argv)
                                   options.sanitize);
     options.analysis = merge_strv(g_strsplit(DEFAULT_LOG_PATTERNS, " ", -1),
                                   options.analysis);
+
+    // Sanity check
+    if ((options.to_time != 0) && (options.to_time < options.from_time)) {
+        fprintf(stderr,
+                "Usage error: 'to' time cannot be earlier than 'from' time\n");
+        crm_exit(CRM_EX_USAGE);
+    }
 }
 
 static void
@@ -471,8 +505,19 @@ log_options(void)
     printf("Single node? %s\n", options.single_node? "yes" : "no");
     printf("SOS mode? %s\n", options.sos? "yes" : "no");
     printf("Deprecated option used? %s\n", options.deprecated? "yes" : "no");
-    printf("Times: %s to %s\n", options.from_time? options.from_time : "beginning",
-           options.to_time? options.to_time : "now");
+
+    {
+        char from_str[1024] = { '\0', };
+        char to_str[1024] = { '\0', };
+
+        time2str(from_str, sizeof(from_str), "%x %X", options.from_time);
+        time2str(to_str, sizeof(to_str), "%x %X", options.to_time);
+
+        printf("Times: %lld (%s) to %lld (%s)\n",
+               (long long) options.from_time, from_str,
+               (long long) options.to_time, to_str);
+    }
+
     printf("Remote user: %s\n", options.user);
     printf("Remote shell: %s\n", options.shell);
     printf("Cluster type: %s\n", cluster2str(options.cluster_type));
@@ -512,6 +557,22 @@ cluster2str(enum cluster_e cluster_type)
     }
 }
 
+static void
+time2str(char *s, size_t n, const char *fmt, time_t t)
+{
+#ifdef GCC_FORMAT_NONLITERAL_CHECKING_ENABLED
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+#endif
+    if (!strftime(s, n, fmt, localtime(&t))) {
+        // Should never happen, but have a fallback just in case
+        snprintf(s, n, "time-%lld", (long long) t);
+    }
+#ifdef GCC_FORMAT_NONLITERAL_CHECKING_ENABLED
+#pragma GCC diagnostic pop
+#endif
+}
+
 
 /*
  * Main
@@ -527,8 +588,6 @@ finish(crm_exit_t exit_code)
         pcmk__output_free(options.out);
     }
 
-    g_free(options.from_time);
-    g_free(options.to_time);
     g_free(options.dest);
     g_free(options.user);
     g_free(options.shell);
@@ -550,7 +609,15 @@ main(int argc, char **argv)
     crm_log_cli_init("crm_report");
     parse_args(argc, argv);
     handle_common_args(argc, argv);
+
+    if (options.to_time == 0) {
+        options.to_time = time(NULL);
+    }
+
+    // @WIP For now, just print from/to times
     log_options();
+    printf("from=%lld to=%lld\n",
+           (long long) options.from_time, (long long) options.to_time);
 
     // @WIP Nothing is implemented yet
     exit_code = CRM_EX_UNIMPLEMENT_FEATURE;
@@ -835,10 +902,6 @@ detect_host() {
 	fi
     done
     debug "Core files located under: $CRM_CORE_DIRS"
-}
-
-time2str() {
-	perl -e "use POSIX; print strftime('%x %X',localtime($1));"
 }
 
 get_time() {
@@ -1420,15 +1483,6 @@ find_cluster_cf() {
 	    ;;
     esac
 }
-
-#
-# check for the major prereq for a) parameter parsing and b)
-# parsing logs
-#
-t=`get_time "12:00"`
-if [ "$t" = "" ]; then
-	fatal "please install the perl Date::Parse module (perl-DateTime-Format-DateParse on Fedora/Red Hat)"
-fi
 
 # Override any locale settings so collected output is in a common language
 LC_ALL="C"
@@ -2313,19 +2367,7 @@ fi
 ## crm_report.in
 
 progname=$(basename "$0")
-report_data=`dirname $0`
 
-# Prefer helpers in the same directory if they exist, to simplify development
-if [ ! -f $report_data/report.common ]; then
-    report_data=@datadir@/@PACKAGE@
-else
-    echo "Using local helpers"
-fi
-
-. $report_data/report.common
-
-start_time=`get_time "$options.from_time"`
-end_time=`get_time "$options.to_time"`
 if options.single_node; then
     options.nodes="$host"
 fi
@@ -2622,7 +2664,7 @@ fi
 if [ "x$options.cts" != "x" ]; then
     do_cts
 
-elif [ "x$start_time" != "x" ]; then
+elif [ "x$options.from_time" != "x" ]; then
     masterlog=""
 
     if [ -z "$options.sanitize" ]; then
@@ -2664,12 +2706,9 @@ elif [ "x$start_time" != "x" ]; then
     fi
 
 
-    if [ -z $end_time ]; then
-	end_time=`perl -e 'print time()'`
-    fi
     label="pcmk-`date +"%a-%d-%b-%Y"`"
-    log "Collecting data from $options.nodes (`time2str $start_time` to `time2str $end_time`)"
-    collect_data $label $start_time $end_time $masterlog
+    log "Collecting data from $options.nodes (`time2str $options.from_time` to `time2str $options.to_time`)"
+    collect_data $label $options.from_time $options.to_time $masterlog
 else
     fatal "Not sure what to do, no tests or time ranges to extract"
 fi
