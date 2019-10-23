@@ -802,6 +802,140 @@ time2str(char *s, size_t n, const char *fmt, time_t t)
 
 
 /*
+ * Cluster report
+ */
+
+static crm_exit_t
+cluster_report(void)
+{
+    /*
+    masterlog=""
+
+    if [ -z "$options.sanitize" ]; then
+	info "WARNING: The tarball produced by this program may contain"
+	info "         sensitive information such as passwords."
+	info ""
+	info "We will attempt to remove such information if you use the"
+	info "-p option. For example: -p \"pass.*\" -p \"user.*\""
+	info ""
+	info "However, doing this may reduce the ability for the recipients"
+	info "to diagnose issues and generally provide assistance."
+	info ""
+	info "IT IS YOUR RESPONSIBILITY TO PROTECT SENSITIVE DATA FROM EXPOSURE"
+	info ""
+    fi
+
+    # If user didn't specify a cluster stack, make a best guess if possible.
+    if [ -z "$options.cluster_type" ] || [ "$options.cluster_type" = "cluster_any" ]; then
+        options.cluster_type=$(get_cluster_type)
+    fi
+
+    # If user didn't specify node(s), make a best guess if possible.
+    if [ -z "$options.nodes" ]; then
+	options.nodes=`getnodes $options.cluster_type`
+        if [ -n "$options.nodes" ]; then
+            info "Calculated node list: $options.nodes"
+        else
+            fatal "Cannot determine nodes; specify --nodes or --single-node"
+        fi
+    fi
+
+    if
+	echo $options.nodes | grep -qs $host
+    then
+	debug "We are a cluster node"
+    else
+	debug "We are a log master"
+	masterlog=`findmsg 1 "pacemaker-controld\\|CTS"`
+    fi
+
+
+    label="pcmk-`date +"%a-%d-%b-%Y"`"
+    info "Collecting data from $options.nodes (`time2str $options.from_time` to `time2str $options.to_time`)"
+    collect_data $label $options.from_time $options.to_time $masterlog
+    */
+    options.out->err(options.out, "Cluster report not implemented yet"); // @WIP
+    return CRM_EX_UNIMPLEMENT_FEATURE;
+}
+
+
+/*
+ * CTS report
+ */
+
+static crm_exit_t
+cts_report(void)
+{
+    /*
+    test_sets=`echo $options.cts | tr ',' ' '`
+    for test_set in $test_sets; do
+
+	start_time=0
+	start_test=`echo $test_set | tr '-' ' ' | awk '{print $1}'`
+
+	end_time=0
+	end_test=`echo $test_set | tr '-' ' ' | awk '{print $2}'`
+
+	if [ x$end_test = x ]; then
+	    msg="Extracting test $start_test"
+	    label="CTS-$start_test-`date +"%b-%d-%Y"`"
+	    end_test=`expr $start_test + 1`
+	else
+	    msg="Extracting tests $start_test to $end_test"
+	    label="CTS-$start_test-$end_test-`date +"%b-%d-%Y"`"
+	    end_test=`expr $end_test + 1`
+	fi
+
+	if [ $start_test = 0 ]; then
+	    start_pat="BEGINNING [0-9].* TESTS"
+	else
+	    start_pat="Running test.*\[ *$start_test\]"
+	fi
+
+	if [ x$options.cts_log = x ]; then
+	    options.cts_log=`findmsg 1 "$start_pat"`
+
+	    if [ x$options.cts_log = x ]; then
+		fatal "No CTS control file detected"
+	    else
+		info "Using CTS control file: $options.cts_log"
+	    fi
+	fi
+
+	line=`grep -n "$start_pat" $options.cts_log | tail -1 | sed 's@:.*@@'`
+	if [ ! -z "$line" ]; then
+	    start_time=`linetime $options.cts_log $line`
+	fi
+
+	line=`grep -n "Running test.*\[ *$end_test\]" $options.cts_log | tail -1 | sed 's@:.*@@'`
+	if [ ! -z "$line" ]; then
+	    end_time=`linetime $options.cts_log $line`
+	fi
+
+	if [ -z "$options.nodes" ]; then
+	    options.nodes=`grep CTS: $options.cts_log | grep -v debug: | grep " \* " | sed s:.*\\\*::g | sort -u  | tr '\\n' ' '`
+	    info "Calculated node list: $options.nodes"
+	fi
+
+	if [ $end_time -lt $start_time ]; then
+	    debug "Test didn't complete, grabbing everything up to now"
+	    end_time=`date +%s`
+	fi
+
+	if [ $start_time != 0 ];then
+	    info "$msg (`time2str $start_time` to `time2str $end_time`)"
+	    collect_data $label $start_time $end_time $options.cts_log
+	else
+	    fatal "$msg failed: not found"
+	fi
+    done
+    */
+    options.out->err(options.out, "CTS report not implemented yet"); // @WIP
+    return CRM_EX_UNIMPLEMENT_FEATURE;
+}
+
+
+/*
  * Main
  */
 
@@ -875,8 +1009,15 @@ main(int argc, char **argv)
         fatal("Required program 'tar' not found, please install and re-run");
     }
 
-    // @WIP Nothing is implemented yet
-    exit_code = CRM_EX_UNIMPLEMENT_FEATURE;
+    if (options.cts != NULL) {
+        exit_code = cts_report();
+
+    } else if (options.from_time > 0) {
+        exit_code = cluster_report();
+
+    } else {
+        fatal("Not sure what to do, no tests or time ranges to extract");
+    }
     return finish(exit_code);
 }
 
@@ -2707,71 +2848,6 @@ analyze() {
     done
 }
 
-do_cts() {
-    test_sets=`echo $options.cts | tr ',' ' '`
-    for test_set in $test_sets; do
-
-	start_time=0
-	start_test=`echo $test_set | tr '-' ' ' | awk '{print $1}'`
-
-	end_time=0
-	end_test=`echo $test_set | tr '-' ' ' | awk '{print $2}'`
-
-	if [ x$end_test = x ]; then
-	    msg="Extracting test $start_test"
-	    label="CTS-$start_test-`date +"%b-%d-%Y"`"
-	    end_test=`expr $start_test + 1`
-	else
-	    msg="Extracting tests $start_test to $end_test"
-	    label="CTS-$start_test-$end_test-`date +"%b-%d-%Y"`"
-	    end_test=`expr $end_test + 1`
-	fi
-
-	if [ $start_test = 0 ]; then
-	    start_pat="BEGINNING [0-9].* TESTS"
-	else
-	    start_pat="Running test.*\[ *$start_test\]"
-	fi
-
-	if [ x$options.cts_log = x ]; then
-	    options.cts_log=`findmsg 1 "$start_pat"`
-
-	    if [ x$options.cts_log = x ]; then
-		fatal "No CTS control file detected"
-	    else
-		info "Using CTS control file: $options.cts_log"
-	    fi
-	fi
-
-	line=`grep -n "$start_pat" $options.cts_log | tail -1 | sed 's@:.*@@'`
-	if [ ! -z "$line" ]; then
-	    start_time=`linetime $options.cts_log $line`
-	fi
-
-	line=`grep -n "Running test.*\[ *$end_test\]" $options.cts_log | tail -1 | sed 's@:.*@@'`
-	if [ ! -z "$line" ]; then
-	    end_time=`linetime $options.cts_log $line`
-	fi
-
-	if [ -z "$options.nodes" ]; then
-	    options.nodes=`grep CTS: $options.cts_log | grep -v debug: | grep " \* " | sed s:.*\\\*::g | sort -u  | tr '\\n' ' '`
-	    info "Calculated node list: $options.nodes"
-	fi
-
-	if [ $end_time -lt $start_time ]; then
-	    debug "Test didn't complete, grabbing everything up to now"
-	    end_time=`date +%s`
-	fi
-
-	if [ $start_time != 0 ];then
-	    info "$msg (`time2str $start_time` to `time2str $end_time`)"
-	    collect_data $label $start_time $end_time $options.cts_log
-	else
-	    fatal "$msg failed: not found"
-	fi
-    done
-}
-
 node_names_from_xml() {
     awk '
       /uname/ {
@@ -2811,56 +2887,4 @@ getnodes() {
     # 3. logs
     # TODO: Look for something like crm_update_peer
 }
-
-if [ "x$options.cts" != "x" ]; then
-    do_cts
-
-elif [ "x$options.from_time" != "x" ]; then
-    masterlog=""
-
-    if [ -z "$options.sanitize" ]; then
-	info "WARNING: The tarball produced by this program may contain"
-	info "         sensitive information such as passwords."
-	info ""
-	info "We will attempt to remove such information if you use the"
-	info "-p option. For example: -p \"pass.*\" -p \"user.*\""
-	info ""
-	info "However, doing this may reduce the ability for the recipients"
-	info "to diagnose issues and generally provide assistance."
-	info ""
-	info "IT IS YOUR RESPONSIBILITY TO PROTECT SENSITIVE DATA FROM EXPOSURE"
-	info ""
-    fi
-
-    # If user didn't specify a cluster stack, make a best guess if possible.
-    if [ -z "$options.cluster_type" ] || [ "$options.cluster_type" = "cluster_any" ]; then
-        options.cluster_type=$(get_cluster_type)
-    fi
-
-    # If user didn't specify node(s), make a best guess if possible.
-    if [ -z "$options.nodes" ]; then
-	options.nodes=`getnodes $options.cluster_type`
-        if [ -n "$options.nodes" ]; then
-            info "Calculated node list: $options.nodes"
-        else
-            fatal "Cannot determine nodes; specify --nodes or --single-node"
-        fi
-    fi
-
-    if
-	echo $options.nodes | grep -qs $host
-    then
-	debug "We are a cluster node"
-    else
-	debug "We are a log master"
-	masterlog=`findmsg 1 "pacemaker-controld\\|CTS"`
-    fi
-
-
-    label="pcmk-`date +"%a-%d-%b-%Y"`"
-    info "Collecting data from $options.nodes (`time2str $options.from_time` to `time2str $options.to_time`)"
-    collect_data $label $options.from_time $options.to_time $masterlog
-else
-    fatal "Not sure what to do, no tests or time ranges to extract"
-fi
 */
