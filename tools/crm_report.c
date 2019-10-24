@@ -18,6 +18,9 @@
 #include <sys/stat.h>
 
 #include <crm/crm.h>
+#include <crm/cib.h>
+#include <crm/pengine/status.h>
+#include <crm/pengine/remote_internal.h>
 #include <crm/common/cmdline_internal.h>
 #include <crm/common/output.h>
 #include <crm/common/iso8601.h>
@@ -800,6 +803,34 @@ time2str(char *s, size_t n, const char *fmt, time_t t)
 #endif
 }
 
+static char *
+list2str(GList *list)
+{
+    char *str = NULL;
+    size_t str_len = 0;
+
+    while (list != NULL) {
+        char *item = (char *) list->data;
+        size_t loc = str_len;
+
+        str_len += strlen(item);
+
+        if (loc == 0) {
+            // First item
+            str = strdup(item);
+            CRM_ASSERT(str != NULL);
+        } else {
+            ++str_len; // For space
+            str = realloc_safe(str, str_len + 1);
+            str[loc] = ' ';
+            strcpy(str + loc + 1, item);
+        }
+
+        list = list->next;
+    }
+    return str;
+}
+
 
 /*
  * Cluster utility functions (needed by both CTS and cluster reports)
@@ -882,20 +913,89 @@ detect_cluster_type(void)
  * Cluster report
  */
 
+static xmlNode *
+get_cib(void)
+{
+    cib_t *cib_conn = cib_new();
+    xmlNode *cib_xml = NULL;
+
+    if (cib_conn) {
+        if (cib_conn->cmds->signon(cib_conn, crm_system_name,
+                                   cib_command) == pcmk_ok) {
+            cib_conn->cmds->query(cib_conn, NULL, &cib_xml,
+                                  cib_scope_local|cib_sync_call);
+            cib_conn->cmds->signoff(cib_conn);
+        }
+        cib_delete(cib_conn);
+    }
+    return cib_xml;
+}
+
+static void
+detect_nodes(void)
+{
+    pe_working_set_t *data_set = NULL;
+
+    /* Our first choice is to get the nodes from the CIB. Try the live CIB
+     * first, and the primary CIB XML location if that fails.
+     */
+    xmlNode *cib_xml = get_cib();
+
+    if (cib_xml == NULL) {
+        debug("Couldn't get live CIB for node names, trying standard location");
+        setenv("CIB_file", CRM_CONFIG_DIR "/cib.xml", 1);
+        cib_xml = get_cib();
+    }
+
+    if (cib_xml == NULL) {
+        debug("Couldn't get CIB at standard location for node names");
+        // @TODO maybe search logs for e.g. crm_update_peer()
+        return;
+    }
+
+    // Unpack the CIB
+    data_set = pe_new_working_set();
+    if (data_set == NULL) {
+        debug("Couldn't parse CIB for node names");
+        return;
+    }
+    if (!cli_config_update(&cib_xml, NULL, FALSE)) {
+        debug("Couldn't update CIB to latest schema for node names");
+        pe_free_working_set(data_set);
+        return;
+    }
+    data_set->input = cib_xml;
+    data_set->now = crm_time_new(NULL);
+    cluster_status(data_set);
+    for (GList *n = data_set->nodes; n != NULL; n = n->next) {
+        pe_node_t *node = (pe_node_t *) n->data;
+
+        if (!pe__is_bundle_node(node)) {
+            options.nodes = g_list_prepend(options.nodes,
+                                           strdup(node->details->uname));
+        }
+    }
+    pe_free_working_set(data_set);
+}
+
 static crm_exit_t
 cluster_report(void)
 {
-    /*
-    # If user didn't specify node(s), make a best guess if possible.
-    if [ -z "$options.nodes" ]; then
-	options.nodes=`getnodes $options.cluster_type`
-        if [ -n "$options.nodes" ]; then
-            info "Calculated node list: $options.nodes"
-        else
-            fatal "Cannot determine nodes; specify --nodes or --single-node"
-        fi
-    fi
+    char *nodes = NULL;
 
+    // If user didn't specify node(s), make a best guess
+    if (options.nodes) {
+        nodes = list2str(options.nodes);
+    } else {
+        detect_nodes();
+        if (options.nodes == NULL) {
+            fatal("Cannot determine nodes; specify --nodes or --single-node");
+        }
+        nodes = list2str(options.nodes);
+        info("Calculated node list: %s", nodes);
+    }
+
+    /*
     master_log=
     if
 	echo $options.nodes | grep -qs $host
@@ -906,11 +1006,11 @@ cluster_report(void)
 	master_log=`findmsg 1 "pacemaker-controld\\|CTS"`
     fi
 
-
     label="pcmk-`date +"%a-%d-%b-%Y"`"
     info "Collecting data from $options.nodes (`time2str $options.from_time` to `time2str $options.to_time`)"
     collect_data $label $options.from_time $options.to_time $master_log
     */
+    free(nodes);
     options.out->err(options.out, "Cluster report not implemented yet"); // @WIP
     return CRM_EX_UNIMPLEMENT_FEATURE;
 }
@@ -2868,45 +2968,5 @@ analyze() {
 	    echo ""
 	fi
     done
-}
-
-node_names_from_xml() {
-    awk '
-      /uname/ {
-            for( i=1; i<=NF; i++ )
-                    if( $i~/^uname=/ ) {
-                            sub("uname=.","",$i);
-                            sub("\".*","",$i);
-                            print $i;
-                            next;
-                    }
-      }
-    ' | tr '\n' ' '
-}
-
-getnodes() {
-    cluster="$1"
-
-    # 1. Live (cluster nodes or Pacemaker Remote nodes)
-    # TODO: This will not detect Pacemaker Remote nodes unless they
-    # have ever had a permanent node attribute set, because it only
-    # searches the nodes section. It should also search the config
-    # for resources that create Pacemaker Remote nodes.
-    cib_nodes=$(cibadmin -Ql -o nodes 2>/dev/null)
-    if [ $? -eq 0 ]; then
-	debug "Querying CIB for nodes"
-        echo "$cib_nodes" | node_names_from_xml
-        return
-    fi
-
-    # 2. Saved
-    if [ -f "@CRM_CONFIG_DIR@/cib.xml" ]; then
-	debug "Querying on-disk CIB for nodes"
-        grep "node " "@CRM_CONFIG_DIR@/cib.xml" | node_names_from_xml
-        return
-    fi
-
-    # 3. logs
-    # TODO: Look for something like crm_update_peer
 }
 */

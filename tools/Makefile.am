@@ -70,7 +70,9 @@ cibadmin_LDADD += $(top_builddir)/lib/cib/libcib.la
 cibadmin_LDADD += $(top_builddir)/lib/common/libcrmcommon.la
 
 crm_report_SOURCES	= crm_report.c
-crm_report_LDADD	= $(top_builddir)/lib/common/libcrmcommon.la
+crm_report_LDADD	= $(top_builddir)/lib/pengine/libpe_status.la 	\
+			  $(top_builddir)/lib/cib/libcib.la		\
+			  $(top_builddir)/lib/common/libcrmcommon.la
 
 crm_shadow_SOURCES	= crm_shadow.c
 crm_shadow_LDADD = $(top_builddir)/lib/cib/libcib.la
