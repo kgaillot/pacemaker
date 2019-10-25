@@ -13,9 +13,13 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
+#include <dirent.h>
+#include <regex.h>
 #include <glib.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 #include <crm/crm.h>
 #include <crm/cib.h>
@@ -24,6 +28,18 @@
 #include <crm/common/cmdline_internal.h>
 #include <crm/common/output.h>
 #include <crm/common/iso8601.h>
+
+// Potential locations of system log files and cluster log files
+static const char *syslog_dirs[] = {
+    "/var/log",
+    "/var/logs",
+    "/var/syslog",
+    "/var/adm",
+    "/var/log/ha",
+    "/var/log/cluster",
+    "/var/log/pacemaker",
+    NULL,
+};
 
 static char *host = NULL;
 static char *shorthost = NULL;
@@ -723,6 +739,16 @@ absolute_path(const char *filename)
     return path;
 }
 
+// Eat remainder of line if overlong
+static inline void
+ignore_rest_of_line(FILE *fp)
+{
+    /* This is an empty "if" rather than a "(void)" because fscanf() is
+     * marked with warn_unused_result, which won't allow it.
+     */
+    if (fscanf(fp, "%*[^\n]\n"));
+}
+
 static void
 create_report_home(const char *default_base_name)
 {
@@ -910,6 +936,287 @@ detect_cluster_type(void)
 
 
 /*
+ * Log processing functions
+ */
+
+static const char *
+detect_decompressor(const char *filename)
+{
+    static const char *decompressors[][2] = {
+        { "bz2",    "bzip2 -dc" },
+        { "gz",     "gzip -dc" },
+        { "xz",     "xz -dc" },
+        { NULL,     NULL }
+    };
+
+    for (const char **decompressor = decompressors[0]; decompressor[0] != NULL; ++decompressor) {
+        if (pcmk__ends_with_ext(filename, decompressor[0])) {
+            return decompressor[1];
+        }
+    }
+    return "cat";
+}
+
+// Data for list of log names, sorted by last modification time
+struct loginfo_s {
+    char *name;
+    time_t modified;
+};
+
+// Constructor (takes ownership of name)
+static struct loginfo_s *
+new_loginfo(char *name, time_t modified)
+{
+    struct loginfo_s *candidate = calloc(1, sizeof(struct loginfo_s));
+    CRM_ASSERT(candidate != NULL);
+
+    candidate->name = name;
+    candidate->modified = modified;
+    return candidate;
+}
+
+static void
+free_loginfo(void *data)
+{
+    struct loginfo_s *loginfo = data;
+
+    free(loginfo->name);
+    free(loginfo);
+}
+
+static gint
+sort_newest_first(gconstpointer a, gconstpointer b)
+{
+    return ((struct loginfo_s *) b)->modified - ((struct loginfo_s *) a)->modified;
+}
+
+// true if >25% of line consists of nonprintable characters
+static bool
+is_nonprintable(const char *line)
+{
+    size_t total = 0, nonprintable = 0;
+
+    while (*line) {
+        ++total;
+        if (!isprint(*line)) {
+            ++nonprintable;
+        }
+        ++line;
+    }
+    return total && ((nonprintable / (float) total) > 0.25);
+}
+
+static FILE *
+open_decompressor(const char *decompressor, const char *filename)
+{
+    FILE *fp;
+
+    if (!strcmp(decompressor, "cat")) {
+        fp = fopen(filename, "r");
+    } else {
+        int errno_save;
+        char *call = crm_strdup_printf("%s %s 2>/dev/null",
+                                       decompressor, filename);
+
+        fp = popen(call, "r");
+        errno_save = errno;
+        free(call);
+        errno = errno_save;
+    }
+    return fp;
+}
+
+static int
+close_decompressor(const char *decompressor, FILE *fp)
+{
+    if (!strcmp(decompressor, "cat")) {
+        return fclose(fp);
+    } else {
+        return pclose(fp);
+    }
+}
+
+// true if log file contains at least one line matching regex
+static bool
+log_matches(const char *logname, regex_t *regex)
+{
+    FILE *fp = NULL;
+    bool lineno = 1;
+    bool result = false;
+    char line[1024] = { '\0', };
+    const char *decompressor = detect_decompressor(logname);
+
+    fp = open_decompressor(decompressor, logname);
+    if (fp == NULL) {
+        debug("Couldn't open %s with '%s': %s",
+              logname, decompressor, strerror(errno));
+        return false;
+    }
+
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        /* We want to avoid reading through potentially huge binary logs such as
+         * lastlog. However, control characters sometimes find their way into
+         * text logs, so we use a heuristic of more than 25% nonprintable
+         * characters in any of the file's first few lines.
+         */
+        if ((lineno++ < 4) && is_nonprintable(line)) {
+            break;
+        }
+
+        if (regexec(regex, line, 0, NULL, 0) == 0) {
+            result = true;
+            break;
+        }
+        if (line[strlen(line) - 1] != '\n') {
+            ignore_rest_of_line(fp);
+        }
+    }
+    close_decompressor(decompressor, fp);
+    return result;
+}
+
+/* Accept a directory entry name if it is identical to the relevant log
+ * base name or starts with that name and ends with a digit or "z" (with the
+ * expectation that archived logs will end in a date or compression format
+ * suffix such as ".gz" or ".bz2").
+ */
+static bool
+match_logname(const char *entry_name, const char *log_name)
+{
+    if (strcmp(entry_name, log_name) == 0) {
+        return true;
+    } else {
+        const char *lastchar = entry_name + strlen(entry_name) - 1;
+
+        return (pcmk__starts_with(entry_name, log_name)
+                && (isdigit(*lastchar) || (*lastchar == 'z')));
+    }
+}
+
+/*!
+ * \internal
+ * \brief List non-empty logs that match a desired name
+ *
+ * \param[in,out] list       List of struct loginfo_s to add to
+ * \param[in]     directory  Name of directory to check for logs
+ * \param[in]     name       Match logs with this name (directly or rotated),
+ *                           or all non-hidden files if NULL
+ * \param[in]     start      Only match logs modified more recently than this
+ *
+ * \return New head of list, with any matching logs added
+ */
+static GList *
+list_logs(GList *list, const char *directory, const char *name, time_t start)
+{
+    DIR *dir = opendir(directory);
+    struct dirent *dirent;
+
+    if (dir == NULL) {
+        return list;
+    }
+    for (dirent = readdir(dir); dirent != NULL; dirent = readdir(dir)) {
+        struct stat fileinfo;
+        char *candidate_name = NULL;
+
+        if (((name == NULL) && (dirent->d_name[0] == '.'))
+            || ((name != NULL) && !match_logname(dirent->d_name, name))) {
+            continue;
+        }
+
+        candidate_name = crm_strdup_printf("%s/%s", directory,
+                                           dirent->d_name);
+
+        // Only interested in regular files with something in them
+        if ((stat(candidate_name, &fileinfo) == 0)
+            && is_set(fileinfo.st_mode, S_IFREG)
+            && (fileinfo.st_size > 0) && (fileinfo.st_mtime > start)) {
+
+            struct loginfo_s *candidate = new_loginfo(candidate_name,
+                                                      fileinfo.st_mtime);
+
+            list = g_list_prepend(list, candidate);
+
+        } else {
+            free(candidate_name);
+        }
+    }
+    closedir(dir);
+    return list;
+}
+
+/*!
+ * \internal
+ * \brief Find logs with at least one line matching a regular expression
+ *
+ * \param[in]  pattern    Regular expression to match
+ * \param[in]  max_names  Return at most this number of logs
+ *
+ * \return List of log names found, ordered by most recently modified first
+ */
+static GList *
+find_logs_matching(const char *pattern, size_t max_names)
+{
+    int nfound = 0;
+    GList *names = NULL;
+    GList *candidates = NULL;
+    regex_t regex;
+
+    if (regcomp(&regex, pattern, REG_EXTENDED|REG_NOSUB) != 0) {
+        warning("Internal error: Bad pattern '%s'", pattern);
+        return NULL;
+    }
+
+    // Search system log directories for all log files
+    for (int i = 0; syslog_dirs[i] != NULL; ++i) {
+        candidates = list_logs(candidates, syslog_dirs[i], NULL, 0);
+    }
+    if (candidates == NULL) {
+        debug("No system logs found to search for pattern '%s'", pattern);
+        return NULL;
+    }
+    candidates = g_list_sort(candidates, sort_newest_first);
+
+    // Search each candidate for pattern match
+    for (GList *item = candidates; item != NULL; item = item->next) {
+        struct loginfo_s *candidate = item->data;
+
+        if (log_matches(candidate->name, &regex)) {
+            names = g_list_prepend(names, strdup(candidate->name));
+            if (++nfound >= max_names) {
+                break;
+            }
+        }
+    }
+    g_list_free_full(candidates, free_loginfo);
+    regfree(&regex);
+
+    if (nfound) {
+        char *names_str = list2str(names);
+        debug("Pattern '%s' found in: [ %s ]", pattern, names_str);
+        free(names_str);
+    } else {
+        debug("Pattern '%s' not found in any system logs", pattern);
+    }
+    return names;
+}
+
+// Convenience wrapper to find most recently modified log containing pattern
+static char *
+find_log_matching(const char *pattern)
+{
+    GList *list = find_logs_matching(pattern, 1);
+
+    if (list != NULL) {
+        char *name = list->data;
+
+        g_list_free(list); // Not g_list_free_full()
+        return name;
+    }
+    return NULL;
+}
+
+
+/*
  * Cluster report
  */
 
@@ -982,6 +1289,7 @@ static crm_exit_t
 cluster_report(void)
 {
     char *nodes = NULL;
+    char *master_log = NULL;
 
     // If user didn't specify node(s), make a best guess
     if (options.nodes) {
@@ -995,17 +1303,15 @@ cluster_report(void)
         info("Calculated node list: %s", nodes);
     }
 
-    /*
-    master_log=
-    if
-	echo $options.nodes | grep -qs $host
-    then
-	debug "We are a cluster node"
-    else
-	debug "We are a log master"
-	master_log=`findmsg 1 "pacemaker-controld\\|CTS"`
-    fi
+    if (g_list_find_custom(options.nodes, host, (GCompareFunc) strcasecmp)) {
+        debug("We are a cluster node");
+    } else {
+        master_log = find_log_matching(".*(pacemaker-controld|CTS)");
+        debug("We are a log master (found %s)",
+              (master_log? master_log : "none"));
+    }
 
+    /*
     label="pcmk-`date +"%a-%d-%b-%Y"`"
     info "Collecting data from $options.nodes (`time2str $options.from_time` to `time2str $options.to_time`)"
     collect_data $label $options.from_time $options.to_time $master_log
@@ -1050,7 +1356,7 @@ cts_report(void)
 	fi
 
 	if [ x$options.cts_log = x ]; then
-	    options.cts_log=`findmsg 1 "$start_pat"`
+	    options.cts_log=`find_log_matching ".*$start_pat"`
 
 	    if [ x$options.cts_log = x ]; then
 		fatal "No CTS control file detected"
@@ -1228,16 +1534,6 @@ libdlm libdlm2 libdlm3
 hawk ruby lighttpd
 kernel-default kernel-pae kernel-xen
 glibc
-"
-
-# Potential locations of system log files
-SYSLOGS="
-    /var/log/ *
-    /var/logs/ *
-    /var/syslog/ *
-    /var/adm/ *
-    /var/log/ha/ *
-    /var/log/cluster/ *
 "
 
 # Whether pacemaker-remoted was found (0 = yes, 1 = no, -1 = haven't looked yet)
@@ -1513,79 +1809,6 @@ linetime() {
     get_time_from_line "" $(tail -n +$2 $1 | grep -a ":[0-5][0-9]:" | head -n 1)
 }
 
-#
-# findmsg <max> <pattern>
-#
-# Print the names of up to <max> system logs that contain <pattern>,
-# ordered by most recently modified.
-#
-findmsg() {
-    max=$1
-    pattern="$2"
-    found=0
-
-    # List all potential system logs ordered by most recently modified.
-    candidates=$(ls -1td $SYSLOGS 2>/dev/null)
-    if [ -z "$candidates" ]; then
-        debug "No system logs found to search for pattern \'$pattern\'"
-        return
-    fi
-
-    # Portable way to handle files with spaces in their names.
-    SAVE_IFS=$IFS
-    IFS="
-"
-
-    # Check each log file for matches.
-    logfiles=""
-    for f in $candidates; do
-        local cat=""
-
-        # We only care about readable files with something in them.
-        if [ ! -f "$f" ] || [ ! -r "$f" ] || [ ! -s "$f" ] ; then
-            continue
-        fi
-
-        cat=$(find_decompressor "$f")
-
-        # We want to avoid grepping through potentially huge binary logs such
-        # as lastlog. However, control characters sometimes find their way into
-        # text logs, so we use a heuristic of more than 256 nonprintable
-        # characters in the file's first kilobyte.
-        if [ $($cat "$f" 2>/dev/null | head -c 1024 | tr -d '[:print:][:space:]' | wc -c) -gt 256 ]
-        then
-            continue
-        fi
-
-        # Our patterns are ASCII, so we can use LC_ALL="C" to speed up grep
-        $cat "$f" 2>/dev/null | LC_ALL="C" grep -q -e "$pattern"
-        if [ $? -eq 0 ]; then
-
-            # Add this file to the list of hits
-            # (using newline as separator to handle spaces in names).
-            if [ -z "$logfiles" ]; then
-                logfiles="$f"
-            else
-                logfiles="$logfiles
-$f"
-            fi
-
-            # If we have enough hits, print them and return.
-            found=$(($found+1))
-            if [ $found -ge $max ]; then
-                break
-            fi
-        fi
-    done 2>/dev/null
-    IFS=$SAVE_IFS
-    if [ -z "$logfiles" ]; then
-        debug "Pattern \'$pattern\' not found in any system logs"
-    else
-        debug "Pattern \'$pattern\' found in: [ $logfiles ]"
-        echo "$logfiles"
-    fi
-}
-
 node_events() {
   if [ -e $1 ]; then
     Epatt=`echo "$EVENT_PATTERNS" |
@@ -1695,22 +1918,6 @@ dumplog() {
 }
 
 #
-# find log/set of logs which are interesting for us
-#
-#
-# find log slices
-#
-
-find_decompressor() {
-    case $1 in
-        *bz2) echo "bzip2 -dc" ;;
-        *gz)  echo "gzip -dc" ;;
-        *xz)  echo "xz -dc" ;;
-        *)    echo "cat" ;;
-    esac
-}
-
-#
 # check if the log contains a piece of our segment
 #
 is_our_log() {
@@ -1718,7 +1925,7 @@ is_our_log() {
 	local from_time=$2
 	local to_time=$3
 
-	local cat=`find_decompressor $logf`
+	local cat=`detect_decompressor $logf`
 	local format=`$cat $logf | get_time_format`
 	local first_time=`$cat $logf | head -10 | get_first_time $format`
 	local last_time=`$cat $logf | tail -10 | get_last_time $format`
@@ -1784,7 +1991,7 @@ print_logseg() {
 	local to_time=$3
 
 	# uncompress to a temp file (if necessary)
-	local cat=`find_decompressor $logf`
+	local cat=`detect_decompressor $logf`
 	if [ "$cat" != "cat" ]; then
 		tmp=`mktemp`
 		$cat $logf > $tmp
@@ -1852,7 +2059,7 @@ dumplogset() {
 	*)
 		print_logseg $oldest $from_time 0
 		for f in $mid_logfiles; do
-		    `find_decompressor $f` $f
+		    `detect_decompressor $f` $f
 		    debug "including complete $f logfile"
 		done
 		print_logseg $newest 0 $to_time
@@ -2501,7 +2708,7 @@ find_syslog() {
     killall -HUP rsyslogd >/dev/null 2>&1
 
     sleep 2 # Give syslog time to catch up in case it's busy
-    findmsg 1 "$msg"
+    find_log_matching ".*$msg"
 }
 
 get_logfiles_cs() {
@@ -2586,7 +2793,7 @@ get_logfiles() {
     # - pacemaker_remote might use a different file
     pattern="$pattern\\|pacemaker[-_]remoted:"
 
-    findmsg 3 "$pattern"
+    find_logs_matching ".*$pattern" 3
 }
 
 essential_files() {
