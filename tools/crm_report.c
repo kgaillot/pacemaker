@@ -689,6 +689,69 @@ detect_hostname(void)
     return pcmk_rc_ok;
 }
 
+static bool
+file_exists(const char *filename)
+{
+    struct stat fileinfo;
+
+    return (filename != NULL) && (stat(filename, &fileinfo) == 0);
+}
+
+static char *
+absolute_path(const char *filename)
+{
+    char *path = NULL;
+
+    if (filename[0] == '/') {
+        // filename is already absolute
+        path = strdup(filename);
+        CRM_ASSERT(path != NULL);
+
+    } else {
+        // filename is relative (to current directory)
+        char cwd[PATH_MAX] = { '\0', };
+
+        if (getcwd(cwd, sizeof(cwd)) == NULL) {
+            fatal("Couldn't get current directory: %s", strerror(errno));
+        }
+        path = crm_strdup_printf("%s/%s", cwd, filename);
+    }
+    return path;
+}
+
+static void
+create_report_home(const char *default_base_name)
+{
+    int rc = pcmk_rc_ok;
+
+    if (report_home != NULL) {
+        return;
+    }
+    if (options.dest != NULL) {
+        // User specified a destination directory
+        report_home = absolute_path(options.dest);
+        debug("Using custom scratch dir: %s", report_home);
+
+    } else {
+        // User didn't specify a directory, use default (in home directory)
+        char *home = getenv("HOME");
+
+        report_home = crm_strdup_printf("%s/%s", (home? home : "/tmp"),
+                                        default_base_name);
+    }
+
+    if (file_exists(report_home)) {
+        fatal("Output directory %s already exists, "
+              "specify an alternate name with --dest", report_home);
+    }
+
+    rc = pcmk__build_path(report_home, 0700);
+    if (rc != pcmk_rc_ok) {
+        fatal("Couldn't create destination directory '%s': %s",
+              report_home, pcmk_rc_str(rc));
+    }
+}
+
 static void
 time2str(char *s, size_t n, const char *fmt, time_t t)
 {
@@ -769,14 +832,10 @@ main(int argc, char **argv)
         options.nodes = g_list_prepend(NULL, strdup(host));
     }
 
-    // @WIP For now, define a log file for testing, and record some messages
-    report_home = strdup("report-test");
+    // @WIP For now, define a log file for testing
+    create_report_home("report-test");
     set_report(true);
     log_options();
-    info("This is an info message");
-    debug("This is a debug message");
-    warning("This is a warning message");
-    fatal("This is a fatal message");
 
     // @WIP Nothing is implemented yet
     exit_code = CRM_EX_UNIMPLEMENT_FEATURE;
@@ -2486,25 +2545,7 @@ collect_data() {
     end=`expr $3 + 10`
     masterlog=$4
 
-    if [ "x$options.dest" != x ]; then
-	echo $options.dest | grep -e "^/" -qs
-	if [ $? = 0 ]; then
-	    report_home=$options.dest
-	else
-	    report_home="`pwd`/$options.dest"
-	fi
-	debug "Using custom scratch dir: $report_home"
-	r_base=`basename $report_home`
-    else
-	report_home=$HOME/$label
-	r_base=$label
-    fi
-
-    if [ -e $report_home ]; then
-	fatal "Output directory $report_home already exists, specify an alternate name with --dest"
-    fi
-    mkdir -p $report_home
-
+    create_report_home($label)
     if [ "x$masterlog" != "x" ]; then
 	dumplogset "$masterlog" $start $end > "$report_home/$HALOG_F"
     fi
