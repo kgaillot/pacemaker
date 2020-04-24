@@ -2101,6 +2101,40 @@ handle_restart_ordering(pe_action_t *first, pe_action_t *then,
     }
 }
 
+/*!
+ * \internal
+ * \brief Check whether an action would result in a change in resource state
+ *
+ * \param[in] action  Action to check
+ *
+ * \return true if resource would change due to action, false otherwise
+ */
+static bool
+action_changes_state(pe_action_t *action)
+{
+    enum rsc_role_e role;
+
+    if ((action == NULL) || (action->rsc == NULL)) {
+        return false;
+    }
+
+    role = action->rsc->fns->state(action->rsc, TRUE);
+    if ((role == RSC_ROLE_STOPPED) && safe_str_eq(action->task, RSC_STOP)) {
+        // Action is stop, and resource is aleady stopped
+        return false;
+    }
+
+    if ((role >= RSC_ROLE_STARTED) && safe_str_eq(action->task, RSC_START)
+        && pe__rsc_running_on_only(action->rsc, action->node)) {
+        /* Action is start, resource is already active on desired node, and
+         * resource is not restarting (i.e. action is optional).
+         */
+        return false;
+    }
+
+    return true;
+}
+
 enum pe_graph_flags
 native_update_actions(pe_action_t *first, pe_action_t *then, pe_node_t *node,
                       enum pe_action_flags flags, enum pe_action_flags filter,
@@ -2115,36 +2149,17 @@ native_update_actions(pe_action_t *first, pe_action_t *then, pe_node_t *node,
                  first->uuid, first->node ? first->node->details->uname : "[none]",
                  first->flags, then->uuid, then->flags);
 
-    if (type & pe_order_asymmetrical) {
-        pe_resource_t *then_rsc = then->rsc;
-        enum rsc_role_e then_rsc_role = then_rsc ? then_rsc->fns->state(then_rsc, TRUE) : 0;
-
-        if (!then_rsc) {
-            /* ignore */
-        } else if ((then_rsc_role == RSC_ROLE_STOPPED) && safe_str_eq(then->task, RSC_STOP)) {
-            /* ignore... if 'then' is supposed to be stopped after 'first', but
-             * then is already stopped, there is nothing to be done when non-symmetrical.  */
-        } else if ((then_rsc_role >= RSC_ROLE_STARTED)
-                   && safe_str_eq(then->task, RSC_START)
-                   && is_set(then->flags, pe_action_optional)
-                   && then->node
-                   && pcmk__list_of_1(then_rsc->running_on)
-                   && then->node->details == ((pe_node_t *) then_rsc->running_on->data)->details) {
-            /* Ignore. If 'then' is supposed to be started after 'first', but
-             * 'then' is already started, there is nothing to be done when
-             * asymmetrical -- unless the start is mandatory, which indicates
-             * the resource is restarting, and the ordering is still needed.
-             */
-        } else if (!(first->flags & pe_action_runnable)) {
-            /* prevent 'then' action from happening if 'first' is not runnable and
-             * 'then' has not yet occurred. */
-            pe_action_implies(then, first, pe_action_optional);
-            pe_action_implies(then, first, pe_action_runnable);
-
-            pe_rsc_trace(then->rsc, "Unset optional and runnable on %s", then->uuid);
-        } else {
-            /* ignore... then is allowed to start/stop if it wants to. */
-        }
+    if (is_set(type, pe_order_asymmetrical)
+        && is_not_set(first->flags, pe_action_runnable)
+        && action_changes_state(then)) {
+        /* This is a mandatory asymmetric ordering, and 'then' would change its
+         * resource's state, but 'first' is not runnable, so make sure 'then'
+         * can not happen. This is necessary because we don't set
+         * pe_order_implies_then in the default flags for a mandatory asymmetric
+         * ordering.
+         */
+        pe_action_implies(then, first, pe_action_optional);
+        pe_action_implies(then, first, pe_action_runnable);
     }
 
     if (type & pe_order_implies_first) {
