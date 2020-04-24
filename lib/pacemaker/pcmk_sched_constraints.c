@@ -38,9 +38,9 @@ enum pe_order_kind {
 	}								\
     } while(0)
 
-enum pe_ordering get_flags(const char *id, enum pe_order_kind kind,
-                           const char *action_first, const char *action_then, gboolean invert);
-enum pe_ordering get_asymmetrical_flags(enum pe_order_kind kind);
+static enum pe_ordering default_ordering_flags(enum pe_order_kind kind,
+                                               const char *action_first,
+                                               bool symmetric, bool inverted);
 static pe__location_t *generate_location_rule(pe_resource_t *rsc,
                                               xmlNode *rule_xml,
                                               const char *discovery,
@@ -412,11 +412,8 @@ unpack_simple_rsc_order(xmlNode * xml_obj, pe_working_set_t * data_set)
         cons_weight |= pe_order_implies_then;
     }
 
-    if (invert_bool == FALSE) {
-        cons_weight |= get_asymmetrical_flags(kind);
-    } else {
-        cons_weight |= get_flags(id, kind, action_first, action_then, FALSE);
-    }
+    cons_weight |= default_ordering_flags(kind, action_first, invert_bool,
+                                          false);
 
     if (pe_rsc_is_clone(rsc_first)) {
         /* If clone-min is set, require at least that number of instances to be
@@ -498,7 +495,7 @@ unpack_simple_rsc_order(xmlNode * xml_obj, pe_working_set_t * data_set)
         cons_weight |= pe_order_implies_first;
     }
 
-    cons_weight |= get_flags(id, kind, action_first, action_then, TRUE);
+    cons_weight |= default_ordering_flags(kind, action_first, true, true);
 
     order_id = new_rsc_order(rsc_then, action_then, rsc_first, action_first, cons_weight, data_set);
 
@@ -1631,41 +1628,38 @@ custom_action_order(pe_resource_t * lh_rsc, char *lh_action_task, pe_action_t * 
     return order->id;
 }
 
-enum pe_ordering
-get_asymmetrical_flags(enum pe_order_kind kind)
+/*!
+ * \internal
+ * \brief Get the appropriate ordering flags for a given constraint
+ */
+static enum pe_ordering
+default_ordering_flags(enum pe_order_kind kind, const char *action_first,
+                       bool symmetric, bool inverted)
 {
-    enum pe_ordering flags = pe_order_optional;
+    enum pe_ordering flags = pe_order_none;
 
-    if (kind == pe_order_kind_mandatory) {
-        flags |= pe_order_asymmetrical;
-    } else if (kind == pe_order_kind_serialize) {
-        flags |= pe_order_serialize_only;
+    set_bit(flags, pe_order_optional);
+    switch (kind) {
+        case pe_order_kind_mandatory:
+            if (!symmetric) {
+                set_bit(flags, pe_order_asymmetrical);
+            } else if (inverted) {
+                set_bit(flags, pe_order_implies_first);
+            } else {
+                set_bit(flags, pe_order_implies_then);
+                if (pcmk__str_any_of(action_first, RSC_START, RSC_PROMOTE, NULL)) {
+                    set_bit(flags, pe_order_runnable_left);
+                }
+            }
+            break;
+
+        case pe_order_kind_serialize:
+            set_bit(flags, pe_order_serialize_only);
+            break;
+
+        default:
+            break;
     }
-    return flags;
-}
-
-enum pe_ordering
-get_flags(const char *id, enum pe_order_kind kind,
-          const char *action_first, const char *action_then, gboolean invert)
-{
-    enum pe_ordering flags = pe_order_optional;
-
-    if (invert && kind == pe_order_kind_mandatory) {
-        crm_trace("Upgrade %s: implies left", id);
-        flags |= pe_order_implies_first;
-
-    } else if (kind == pe_order_kind_mandatory) {
-        crm_trace("Upgrade %s: implies right", id);
-        flags |= pe_order_implies_then;
-        if (pcmk__str_any_of(action_first, RSC_START, RSC_PROMOTE, NULL)) {
-            crm_trace("Upgrade %s: runnable", id);
-            flags |= pe_order_runnable_left;
-        }
-
-    } else if (kind == pe_order_kind_serialize) {
-        flags |= pe_order_serialize_only;
-    }
-
     return flags;
 }
 
@@ -1707,11 +1701,7 @@ unpack_order_set(xmlNode * set, enum pe_order_kind parent_kind, pe_resource_t **
     sequential = crm_is_true(sequential_s);
 
     symmetrical = order_is_symmetrical(set, parent_kind, parent_symmetrical_s);
-    if (symmetrical) {
-        flags = get_flags(id, local_kind, action, action, FALSE);
-    } else {
-        flags = get_asymmetrical_flags(local_kind);
-    }
+    flags = default_ordering_flags(local_kind, action, symmetrical, false);
 
     for (xml_rsc = __xml_first_child_element(set); xml_rsc != NULL;
          xml_rsc = __xml_next_element(xml_rsc)) {
@@ -1770,7 +1760,7 @@ unpack_order_set(xmlNode * set, enum pe_order_kind parent_kind, pe_resource_t **
     last = NULL;
     action = invert_action(action);
 
-    flags = get_flags(id, local_kind, action, action, true, true);
+    flags = default_ordering_flags(local_kind, action, true, true);
 
     set_iter = resources;
     while (set_iter != NULL) {
@@ -1833,11 +1823,7 @@ order_rsc_sets(const char *id, xmlNode * set1, xmlNode * set2, enum pe_order_kin
         require_all = TRUE;
     }
 
-    if (symmetrical == FALSE) {
-        flags = get_asymmetrical_flags(kind);
-    } else {
-        flags = get_flags(id, kind, action_2, action_1, invert);
-    }
+    flags = default_ordering_flags(kind, action_2, symmetrical, invert);
 
     /* If we have an un-ordered set1, whether it is sequential or not is irrelevant in regards to set2. */
     if (!require_all) {
