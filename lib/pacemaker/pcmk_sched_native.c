@@ -2118,6 +2118,14 @@ action_changes_state(pe_action_t *action)
         return false;
     }
 
+    if (is_not_set(action->flags, pe_action_optional)) {
+        /* If the action must be executed, even if the resulting role is the
+         * same, the action might affect the resource. Also, a mandatory start
+         * indicates a restart.
+         */
+        return true;
+    }
+
     role = action->rsc->fns->state(action->rsc, TRUE);
     if ((role == RSC_ROLE_STOPPED) && safe_str_eq(action->task, RSC_STOP)) {
         // Action is stop, and resource is aleady stopped
@@ -2126,9 +2134,7 @@ action_changes_state(pe_action_t *action)
 
     if ((role >= RSC_ROLE_STARTED) && safe_str_eq(action->task, RSC_START)
         && pe__rsc_running_on_only(action->rsc, action->node)) {
-        /* Action is start, resource is already active on desired node, and
-         * resource is not restarting (i.e. action is optional).
-         */
+        // Action is start, and resource is already active on desired node
         return false;
     }
 
