@@ -1693,12 +1693,6 @@ unpack_order_set(xmlNode * set, enum pe_order_kind parent_kind, pe_resource_t **
     const char *sequential_s = crm_element_value(set, "sequential");
     const char *kind_s = crm_element_value(set, XML_ORDER_ATTR_KIND);
 
-    /*
-       char *pseudo_id = NULL;
-       char *end_id    = NULL;
-       char *begin_id  = NULL;
-     */
-
     if (action == NULL) {
         action = RSC_START;
     }
@@ -1723,6 +1717,7 @@ unpack_order_set(xmlNode * set, enum pe_order_kind parent_kind, pe_resource_t **
          xml_rsc = __xml_next_element(xml_rsc)) {
 
         if (crm_str_eq((const char *)xml_rsc->name, XML_TAG_RESOURCE_REF, TRUE)) {
+            // This may return FALSE
             EXPAND_CONSTRAINT_IDREF(id, resource, ID(xml_rsc));
             resources = g_list_append(resources, resource);
         }
@@ -1738,36 +1733,13 @@ unpack_order_set(xmlNode * set, enum pe_order_kind parent_kind, pe_resource_t **
         goto done;
     }
 
-    /*
-       pseudo_id = crm_strdup_printf("%s-%s", id, action);
-       end_id    = crm_strdup_printf("%s-%s", pseudo_id, "end");
-       begin_id  = crm_strdup_printf("%s-%s", pseudo_id, "begin");
-     */
-
     *rsc = NULL;
-    /*
-     *end = get_pseudo_op(end_id, data_set);
-     *begin = get_pseudo_op(begin_id, data_set);
-
-     free(pseudo_id);
-     free(begin_id);
-     free(end_id);
-     */
-
     set_iter = resources;
     while (set_iter != NULL) {
         resource = (pe_resource_t *) set_iter->data;
         set_iter = set_iter->next;
 
         key = pcmk__op_key(resource->id, action, 0);
-
-        /*
-           custom_action_order(NULL, NULL, *begin, resource, strdup(key), NULL,
-           flags|pe_order_implies_first_printed, data_set);
-
-           custom_action_order(resource, strdup(key), NULL, NULL, NULL, *end,
-           flags|pe_order_implies_then_printed, data_set);
-         */
 
         if (local_kind == pe_order_kind_serialize) {
             /* Serialize before everything that comes after */
@@ -1798,35 +1770,12 @@ unpack_order_set(xmlNode * set, enum pe_order_kind parent_kind, pe_resource_t **
     last = NULL;
     action = invert_action(action);
 
-    /*
-       pseudo_id = crm_strdup_printf("%s-%s", id, action);
-       end_id    = crm_strdup_printf("%s-%s", pseudo_id, "end");
-       begin_id  = crm_strdup_printf("%s-%s", pseudo_id, "begin");
-
-       *inv_end = get_pseudo_op(end_id, data_set);
-       *inv_begin = get_pseudo_op(begin_id, data_set);
-
-       free(pseudo_id);
-       free(begin_id);
-       free(end_id);
-     */
-
-    flags = get_flags(id, local_kind, action, action, TRUE);
+    flags = get_flags(id, local_kind, action, action, true, true);
 
     set_iter = resources;
     while (set_iter != NULL) {
         resource = (pe_resource_t *) set_iter->data;
         set_iter = set_iter->next;
-
-        /*
-           key = pcmk__op_key(resource->id, action, 0);
-
-           custom_action_order(NULL, NULL, *inv_begin, resource, strdup(key), NULL,
-           flags|pe_order_implies_first_printed, data_set);
-
-           custom_action_order(resource, key, NULL, NULL, NULL, *inv_end,
-           flags|pe_order_implies_then_printed, data_set);
-         */
 
         if (sequential) {
             if (last != NULL) {
@@ -2153,10 +2102,6 @@ unpack_rsc_order(xmlNode * xml_obj, pe_working_set_t * data_set)
 
     pe_resource_t *rsc = NULL;
 
-    /*
-       pe_resource_t *last_rsc = NULL;
-     */
-
     pe_action_t *set_end = NULL;
     pe_action_t *set_begin = NULL;
 
@@ -2168,13 +2113,6 @@ unpack_rsc_order(xmlNode * xml_obj, pe_working_set_t * data_set)
 
     xmlNode *orig_xml = NULL;
     xmlNode *expanded_xml = NULL;
-
-    /*
-       pe_action_t *last_end = NULL;
-       pe_action_t *last_begin = NULL;
-       pe_action_t *last_inv_end = NULL;
-       pe_action_t *last_inv_begin = NULL;
-     */
 
     const char *id = crm_element_value(xml_obj, XML_ATTR_ID);
     const char *invert = crm_element_value(xml_obj, XML_CONS_ATTR_SYMMETRICAL);
@@ -2192,73 +2130,27 @@ unpack_rsc_order(xmlNode * xml_obj, pe_working_set_t * data_set)
         return FALSE;
     }
 
-    for (set = __xml_first_child_element(xml_obj); set != NULL;
-         set = __xml_next_element(set)) {
+    // Check for resource sets in the ordering constraint
+    for (set = first_named_child(xml_obj, XML_CONS_TAG_RSC_SET); set != NULL;
+         set = crm_next_same_xml(set)) {
 
-        if (crm_str_eq((const char *)set->name, XML_CONS_TAG_RSC_SET, TRUE)) {
-            any_sets = TRUE;
-            set = expand_idref(set, data_set->input);
-            if (unpack_order_set(set, kind, &rsc, &set_begin, &set_end,
-                                 &set_inv_begin, &set_inv_end, invert, data_set) == FALSE) {
-                return FALSE;
-
-                /* Expand orders in order_rsc_sets() instead of via pseudo actions. */
-                /*
-                   } else if(last) {
-                   const char *set_action = crm_element_value(set, "action");
-                   const char *last_action = crm_element_value(last, "action");
-                   enum pe_ordering flags = get_flags(id, kind, last_action, set_action, FALSE);
-
-                   if(!set_action) { set_action = RSC_START; }
-                   if(!last_action) { last_action = RSC_START; }
-
-                   if(rsc == NULL && last_rsc == NULL) {
-                   order_actions(last_end, set_begin, flags);
-                   } else {
-                   custom_action_order(
-                   last_rsc, null_or_opkey(last_rsc, last_action), last_end,
-                   rsc, null_or_opkey(rsc, set_action), set_begin,
-                   flags, data_set);
-                   }
-
-                   if(crm_is_true(invert)) {
-                   set_action = invert_action(set_action);
-                   last_action = invert_action(last_action);
-
-                   flags = get_flags(id, kind, last_action, set_action, TRUE);
-                   if(rsc == NULL && last_rsc == NULL) {
-                   order_actions(last_inv_begin, set_inv_end, flags);
-
-                   } else {
-                   custom_action_order(
-                   last_rsc, null_or_opkey(last_rsc, last_action), last_inv_begin,
-                   rsc, null_or_opkey(rsc, set_action), set_inv_end,
-                   flags, data_set);
-                   }
-                   }
-                 */
-
-            } else if (         /* never called -- Now call it for supporting clones in resource sets */
-                          last) {
-                if (order_rsc_sets(id, last, set, kind, data_set, FALSE, invert_bool) == FALSE) {
-                    return FALSE;
-                }
-
-                if (invert_bool
-                    && order_rsc_sets(id, set, last, kind, data_set, TRUE, invert_bool) == FALSE) {
-                    return FALSE;
-                }
-
-            }
-            last = set;
-            /*
-               last_rsc = rsc;
-               last_end = set_end;
-               last_begin = set_begin;
-               last_inv_end = set_inv_end;
-               last_inv_begin = set_inv_begin;
-             */
+        any_sets = TRUE;
+        set = expand_idref(set, data_set->input);
+        if (!unpack_order_set(set, kind, &rsc, &set_begin, &set_end,
+                              &set_inv_begin, &set_inv_end, invert, data_set)) {
+            return FALSE; // A resource ID in the set was invalid
         }
+        if (last) {
+            if (!order_rsc_sets(id, last, set, kind, data_set,
+                                FALSE, invert_bool)) {
+                return FALSE;
+            }
+            if (invert_bool && !order_rsc_sets(id, set, last, kind, data_set,
+                                               TRUE, invert_bool)) {
+                return FALSE;
+            }
+        }
+        last = set;
     }
 
     if (expanded_xml) {
