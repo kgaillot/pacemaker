@@ -1823,7 +1823,7 @@ order_rsc_sets(const char *id, xmlNode * set1, xmlNode * set2, enum pe_order_kin
         require_all = TRUE;
     }
 
-    flags = default_ordering_flags(kind, action_2, symmetrical, invert);
+    flags = default_ordering_flags(kind, action_1, symmetrical, invert);
 
     /* If we have an un-ordered set1, whether it is sequential or not is irrelevant in regards to set2. */
     if (!require_all) {
