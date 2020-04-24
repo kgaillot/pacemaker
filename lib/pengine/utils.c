@@ -2835,6 +2835,17 @@ pe__clear_resource_history(pe_resource_t *rsc, pe_node_t *node,
 }
 
 bool
+pe__rsc_running_on_only(pe_resource_t *rsc, pe_node_t *node)
+{
+    if ((rsc != NULL) && (node != NULL) && pcmk__list_of_1(rsc->running_on)) {
+        pe_node_t *running_on = (pe_node_t *) rsc->running_on->data;
+
+        return node->details == running_on->details;
+    }
+    return false;
+}
+
+bool
 pe__rsc_running_on_any_node_in_list(pe_resource_t *rsc, GListPtr node_list)
 {
     for (GListPtr ele = rsc->running_on; ele; ele = ele->next) {
