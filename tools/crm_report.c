@@ -42,6 +42,9 @@ static const char *syslog_dirs[] = {
     NULL,
 };
 
+// Log entries of interest on each node will be extracted into this file
+#define CLUSTER_LOGNAME "cluster-log.txt"
+
 static char *host = NULL;
 static char *shorthost = NULL;
 static char *report_home = NULL;
@@ -1013,6 +1016,12 @@ free_loginfo(void *data)
 }
 
 static gint
+sort_oldest_first(gconstpointer a, gconstpointer b)
+{
+    return ((struct loginfo_s *) a)->modified - ((struct loginfo_s *) b)->modified;
+}
+
+static gint
 sort_newest_first(gconstpointer a, gconstpointer b)
 {
     return ((struct loginfo_s *) b)->modified - ((struct loginfo_s *) a)->modified;
@@ -1289,6 +1298,151 @@ time_from_log_entry(const char *line, int years_since_1900)
     return 0;
 }
 
+static GList *
+list_logs_from_oldest(const char *log_basepath, time_t start)
+{
+    char *log_dir = NULL;
+    char *log_base = NULL;
+    GList *logs = NULL;
+
+    // Caller must specify full path
+    CRM_CHECK(log_basepath[0] == '/', return NULL);
+
+    // Split log name into directory and base name
+    log_dir = strdup(log_basepath);
+    CRM_CHECK(log_dir != NULL, return NULL);
+    log_base = strrchr(log_dir, '/');
+    CRM_CHECK((log_base != NULL) && (log_base != log_dir),
+              free(log_dir); return NULL);
+    *log_base++ = '\0';
+
+    /* Find all logs that match the desired name and were modified after the
+     * desired start time.
+     */
+    logs = list_logs(NULL, log_dir, log_base, start);
+    free(log_dir);
+    if (logs != NULL) {
+        logs = g_list_sort(logs, sort_oldest_first);
+    }
+    return logs;
+}
+
+/*!
+ * \internal
+ * \brief Extract lines from log(s) between two times
+ *
+ * Given a log file base name, for each matching log file, extract lines with
+ * timestamps between two specified times and write them to an output file.
+ *
+ * \param[in] log_basepath     Full path to (unrotated) log file
+ * \param[in] start            Only extract lines after this time
+ * \param[in] end              Only extract lines before this time
+ * \param[in] output_filename  Write extracted lines to this file
+ *
+ * \note This assumes a log's last modification time matches the time of its
+ *       last message. Also, it stops extracting at the first log line past the
+ *       desired end time, so it may miss entries if the system clock later
+ *       jumped backward back into the time of interest.
+ */
+static void
+extract_from_logs(const char *log_basepath, time_t start, time_t end,
+                  const char *output_filename)
+{
+    FILE *fp_out = NULL;
+    GList *candidates = NULL;
+    char line[1024] = { '\0', };
+
+    fp_out = fopen(output_filename, "w");
+    if (fp_out == NULL) {
+        warning("Couldn't create %s: %s", output_filename, strerror(errno));
+        return;
+    }
+
+    candidates = list_logs_from_oldest(log_basepath, start);
+    if (candidates == NULL) {
+        fclose(fp_out);
+        return;
+    }
+
+    for (GList *item = candidates; item != NULL; item = item->next) {
+        struct loginfo_s *candidate = item->data;
+        const char *decompressor = detect_decompressor(candidate->name);
+        FILE *fp_in = open_decompressor(decompressor, candidate->name);
+        int lineno = 0;
+        time_t this_time = 0;
+        struct tm *tm_log = localtime(&(candidate->modified));
+        bool found_timestamp = false;
+        bool extracted_any = false;
+
+        if (fp_in == NULL) {
+            warning("Couldn't open %s with '%s': %s",
+                    candidate->name, decompressor, strerror(errno));
+            continue;
+        }
+        while (fgets(line, sizeof(line), fp_in) != NULL) {
+            bool partial = false;
+
+            ++lineno;
+
+            /* Assume all log entries without a year are from the year that the
+             * log was last modified.
+             *
+             * @TODO This will do the wrong thing for logs that span more than
+             * one year and don't have years in their timestamps.
+             */
+            this_time = time_from_log_entry(line, tm_log->tm_year);
+
+            if ((end != 0) && (this_time > end)) {
+                /* The rest of this log, as well as all further logs, are after
+                 * the time of interest.
+                 */
+                break;
+            }
+
+            // Don't waste time scanning an entire unrecognizable file
+            if (!found_timestamp) {
+                if (this_time != 0) {
+                    found_timestamp = true;
+
+                } else if (lineno > 10) {
+                    warning("Skipping log file %s because it does not have a "
+                            "recognizable timestamp format", candidate->name);
+                    break;
+                }
+            }
+
+            partial = (line[strlen(line) - 1] != '\n');
+
+            if (found_timestamp &&
+                (((this_time == 0) && extracted_any) || (this_time > start))) {
+
+                if (!extracted_any) {
+                    extracted_any = true;
+                    debug("Found log %s", candidate->name);
+                }
+                if ((fputs(line, fp_out) < 0)
+                   || (partial && (fputc('\n', fp_out) < 0))) {
+                    warning("Couldn't write to %s: %s",
+                            output_filename, strerror(errno));
+                    g_list_free_full(candidates, free);
+                    fclose(fp_in);
+                    fclose(fp_out);
+                    return;
+                }
+            }
+            if (partial) {
+                ignore_rest_of_line(fp_in);
+            }
+        }
+        fclose(fp_in);
+        if ((end != 0) && (this_time > end)) {
+            // This was the last log of interest
+            break;
+        }
+    }
+    g_list_free_full(candidates, free);
+    fclose(fp_out);
+}
 
 /*
  * Data collection
@@ -1370,7 +1524,12 @@ static void
 collect_data(time_t start, time_t end, const char *master_log)
 {
     if (master_log != NULL) {
-        // @WIP dumplogset "$master_log" $start-10 $end+10 > "$report_home/$HALOG_F"
+        char *log_extract = crm_strdup_printf("%s/" CLUSTER_LOGNAME,
+                                              report_home);
+
+        // Fuzz the times
+        extract_from_logs(master_log, start - 10, end + 10, log_extract);
+        free(log_extract);
     }
 
     for (GList *item = options.nodes; item != NULL; item = item->next) {
@@ -1392,15 +1551,15 @@ collect_data(time_t start, time_t end, const char *master_log)
 
     /* @WIP
     analyze $local_base_dir > $local_base_dir/$ANALYSIS_F
-    if [ -f $local_base_dir/$HALOG_F ]; then
-	node_events $local_base_dir/$HALOG_F > $local_base_dir/$EVENTS_F
+    if [ -f $local_base_dir/$CLUSTER_LOGNAME ]; then
+	node_events $local_base_dir/$CLUSTER_LOGNAME > $local_base_dir/$EVENTS_F
     fi
 
     for node in $options.nodes; do
 	cat $local_base_dir/$node/$ANALYSIS_F >> $local_base_dir/$ANALYSIS_F
 	if [ -s $local_base_dir/$node/$EVENTS_F ]; then
 	    cat $local_base_dir/$node/$EVENTS_F >> $local_base_dir/$EVENTS_F
-	elif [ -s $local_base_dir/$HALOG_F ]; then
+	elif [ -s $local_base_dir/$CLUSTER_LOGNAME ]; then
 	    awk "\$4==\"$options.nodes\"" $local_base_dir/$EVENTS_F >> $local_base_dir/$n/$EVENTS_F
 	fi
     done
@@ -1782,7 +1941,6 @@ main(int argc, char **argv)
 # Target Files
 EVENTS_F=events.txt
 ANALYSIS_F=analysis.txt
-HALOG_F=cluster-log.txt
 BT_F=backtraces.txt
 SYSINFO_F=sysinfo.txt
 SYSSTATS_F=sysstats.txt
@@ -2036,213 +2194,6 @@ shrink() {
     cd $olddir  >/dev/null 2>&1
 
     echo $target
-}
-
-findln_by_time() {
-    local logf=$1
-    local tm=$2
-    local first=1
-
-    # Some logs can be massive (over 1,500,000,000 lines have been seen in the wild) 
-    # Even just 'wc -l' on these files can take 10+ minutes 
-
-    local fileSize=`ls -lh "$logf" | awk '{ print $5 }' | grep -ie G`
-    if [ x$fileSize != x ]; then
-        warning "$logf is ${fileSize} in size and could take many hours to process. Skipping."
-        return
-    fi
-
-    local last=`wc -l < $logf`
-    while [ $first -le $last ]; do
-	mid=$((($last+$first)/2))
-	trycnt=10
-	while [ $trycnt -gt 0 ]; do
-	    tmid=`linetime $logf $mid`
-	    [ "$tmid" ] && break
-	    warning "cannot extract time: $logf:$mid; will try the next one"
-	    trycnt=$(($trycnt-1))
-			# shift the whole first-last segment
-	    first=$(($first-1))
-	    last=$(($last-1))
-	    mid=$((($last+$first)/2))
-	done
-	if [ -z "$tmid" ]; then
-	    warning "giving up on log..."
-	    return
-	fi
-	if [ $tmid -gt $tm ]; then
-	    last=$(($mid-1))
-	elif [ $tmid -lt $tm ]; then
-	    first=$(($mid+1))
-	else
-	    break
-	fi
-    done
-    echo $mid
-}
-
-dumplog() {
-    local logf=$1
-    local from_line=$2
-    local to_line=$3
-    [ "$from_line" ] ||
-    return
-    tail -n +$from_line $logf |
-    if [ "$to_line" ]; then
-	head -$(($to_line-$from_line+1))
-    else
-	cat
-    fi
-}
-
-#
-# check if the log contains a piece of our segment
-#
-is_our_log() {
-	local logf=$1
-	local from_time=$2
-	local to_time=$3
-
-	local cat=`detect_decompressor $logf`
-	local format=`$cat $logf | get_time_format`
-	local first_time=`$cat $logf | head -10 | get_first_time $format`
-	local last_time=`$cat $logf | tail -10 | get_last_time $format`
-
-	if [ x = "x$first_time" -o x = "x$last_time" ]; then
-	    warning "Skipping bad logfile '$1': Could not determine log dates"
-	    return 0 # skip (empty log?)
-	fi
-	if [ $from_time -gt $last_time ]; then
-		# we shouldn't get here anyway if the logs are in order
-		return 2 # we're past good logs; exit
-	fi
-	if [ $from_time -ge $first_time ]; then
-		return 3 # this is the last good log
-	fi
-	# have to go further back
-	if [ x = "x$to_time" -o $to_time -ge $first_time ]; then
-		return 1 # include this log
-	else
-		return 0 # don't include this log
-	fi
-}
-#
-# go through archived logs (timewise backwards) and see if there
-# are lines belonging to us
-# (we rely on untouched log files, i.e. that modify time
-# hasn't been changed)
-#
-arch_logs() {
-	local logf=$1
-	local from_time=$2
-	local to_time=$3
-
-	# look for files such as: ha-log-20090308 or
-	# ha-log-20090308.gz (.bz2) or ha-log.0, etc
-	ls -t $logf $logf*[0-9z] 2>/dev/null |
-	while read next_log; do
-		is_our_log $next_log $from_time $to_time
-		case $? in
-		0) ;;  # noop, continue
-		1) echo $next_log  # include log and continue
-			debug "Found log $next_log"
-			;;
-		2) break;; # don't go through older logs!
-		3) echo $next_log  # include log and continue
-			debug "Found log $next_log"
-			break
-			;; # don't go through older logs!
-		esac
-	done
-}
-
-#
-# print part of the log
-#
-drop_tmp_file() {
-	[ -z "$tmp" ] || rm -f "$tmp"
-}
-
-print_logseg() {
-	local logf=$1
-	local from_time=$2
-	local to_time=$3
-
-	# uncompress to a temp file (if necessary)
-	local cat=`detect_decompressor $logf`
-	if [ "$cat" != "cat" ]; then
-		tmp=`mktemp`
-		$cat $logf > $tmp
-		trap drop_tmp_file 0
-		sourcef=$tmp
-	else
-		sourcef=$logf
-		tmp=""
-	fi
-
-	if [ "$from_time" = 0 ]; then
-		FROM_LINE=1
-	else
-		FROM_LINE=`findln_by_time $sourcef $from_time`
-	fi
-	if [ -z "$FROM_LINE" ]; then
-		warning "couldn't find line for time $from_time; corrupt log file?"
-		return
-	fi
-
-	TO_LINE=""
-	if [ "$to_time" != 0 ]; then
-		TO_LINE=`findln_by_time $sourcef $to_time`
-		if [ -z "$TO_LINE" ]; then
-			warning "couldn't find line for time $to_time; corrupt log file?"
-			return
-		fi
-		if [ $FROM_LINE -lt $TO_LINE ]; then
-		    dumplog $sourcef $FROM_LINE $TO_LINE
-		    info "Including segment [$FROM_LINE-$TO_LINE] from $logf"
-		else
-		    debug "Empty segment [$FROM_LINE-$TO_LINE] from $logf"
-		fi
-	else
-	    dumplog $sourcef $FROM_LINE $TO_LINE
-	    info "Including all logs after line $FROM_LINE from $logf"
-	fi
-	drop_tmp_file
-	trap "" 0
-}
-
-#
-# find log/set of logs which are interesting for us
-#
-dumplogset() {
-	local logf=$1
-	local from_time=$2
-	local to_time=$3
-
-	local logf_set=`arch_logs $logf $from_time $to_time`
-	if [ x = "x$logf_set" ]; then
-		return
-	fi
-
-	local num_logs=`echo "$logf_set" | wc -l`
-	local oldest=`echo $logf_set | awk '{print $NF}'`
-	local newest=`echo $logf_set | awk '{print $1}'`
-	local mid_logfiles=`echo $logf_set | awk '{for(i=NF-1; i>1; i--) print $i}'`
-
-	# the first logfile: from $from_time to $to_time (or end)
-	# logfiles in the middle: all
-	# the last logfile: from beginning to $to_time (or end)
-	case $num_logs in
-	1) print_logseg $newest $from_time $to_time;;
-	*)
-		print_logseg $oldest $from_time 0
-		for f in $mid_logfiles; do
-		    `detect_decompressor $f` $f
-		    debug "including complete $f logfile"
-		done
-		print_logseg $newest 0 $to_time
-	;;
-	esac
 }
 
 # cut out a stanza
@@ -3044,7 +2995,7 @@ collect_logs() {
                 continue
             fi
 
-            dumplogset "$cl_logfile" $options.from_time-10 $options.to_time+10 > "$cl_extract"
+            extract_from_logs("$cl_logfile",$options.from_time-10,$options.to_time+10,"$cl_extract")
             sanitize "$cl_extract"
 
             grep -f "$cl_pattfile" "$cl_extract" >> $ANALYSIS_F
@@ -3173,8 +3124,8 @@ for l in $logfiles; do
     node_events "$b" > $EVENTS_F
 
     # Link the first logfile to a standard name if it doesn't yet exist
-    if [ -e "$b" -a ! -e "$HALOG_F" ]; then
-	ln -s "$b" "$HALOG_F"
+    if [ -e "$b" -a ! -e "$CLUSTER_LOGNAME" ]; then
+	ln -s "$b" "$CLUSTER_LOGNAME"
     fi
 done
 
