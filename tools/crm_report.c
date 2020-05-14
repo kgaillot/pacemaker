@@ -1243,6 +1243,52 @@ find_log_matching(const char *pattern)
     return NULL;
 }
 
+static time_t
+time_from_log_entry(const char *line, int years_since_1900)
+{
+    /* @TODO If speed is an issue, we could remember a log's first detected time
+     * format, and jump straight to that parse method for remaining lines.
+     */
+    crm_time_t *dt = NULL;
+    time_t epoch = 0;
+    struct tm tm = { 0, };
+    const char *c = line;
+
+    if (line == NULL) {
+        return 0;
+    }
+
+    // To speed things up, bail if there is no ':' in the first three words
+    for (int i = 0; (i < 3) && (*c != '\0') && (*c != ':'); ++i) {
+        for (; (*c != '\0') && isspace(*c); ++c);
+        for (; (*c != '\0') && (*c != ':') && !isspace(*c); ++c);
+    }
+    if (*c != ':') {
+        return 0;
+    }
+
+    // Check for common syslog and pacemaker.log time formats
+    c = strptime(line, "%b %d %T", &tm);
+    if (c == NULL) {
+        c = strptime(line, "%b %e %T", &tm);
+    }
+    if (c != NULL) {
+        tm.tm_year = years_since_1900;
+        tm.tm_isdst = -1;
+        epoch = mktime(&tm);
+        return (epoch < 0)? 0 : epoch;
+    }
+
+    // Check for ISO 8601 date/time
+    dt = crm_time_new(line);
+    if (dt != NULL) {
+        epoch = (time_t) crm_time_get_seconds_since_epoch(dt);
+        crm_time_free(dt);
+        return epoch;
+    }
+    return 0;
+}
+
 
 /*
  * Data collection
@@ -1937,117 +1983,8 @@ detect_host() {
     debug "Core files located under: $CRM_CORE_DIRS"
 }
 
-get_time() {
-	perl -e "\$time=\"$*\";" -e '
-	$unix_tm = 0;
-	eval "use Date::Parse";
-	if (index($time, ":") < 0) {
-	} elsif (!$@) {
-		$unix_tm = str2time($time);
-	} else {
-		eval "use Date::Manip";
-		if (!$@) {
-			$unix_tm = UnixDate(ParseDateString($time), "%s");
-		}
-	}
-	if ($unix_tm != "") {
-		print int($unix_tm);
-	} else {
-		print "";
-	}
-	'
-}
-
-get_time_syslog() {
-    awk '{print $1,$2,$3}'
-}
-
-get_time_legacy() {
-    awk '{print $2}' | sed 's/_/ /'
-}
-
-get_time_iso8601() {
-    awk '{print $1}'
-}
-
-get_time_format_for_string() {
-    l="$*"
-    t=$(get_time `echo $l | get_time_syslog`)
-    if [ "x$t" != x ]; then
-	echo syslog
-	return
-    fi
-
-    t=$(get_time `echo $l | get_time_iso8601`)
-    if [ "x$t" != x ]; then
-	echo iso8601
-	return
-    fi
-
-    t=$(get_time `echo $l | get_time_legacy`)
-    if [ "x$t" != x ]; then
-	echo legacy
-	return
-    fi
-}
-
-get_time_format() {
-    t=0 l="" func=""
-    trycnt=10
-    while [ $trycnt -gt 0 ] && read l; do
-	func=$(get_time_format_for_string $l)
-	if [ "x$func" != x ]; then
-	    break
-	fi
-	trycnt=$(($trycnt-1))
-    done
-    #debug "Logfile uses the $func time format"
-    echo $func
-}
-
-get_time_from_line() {
-    GTFL_FORMAT="$1"
-    shift
-    if [ "$GTFL_FORMAT" = "" ]; then
-        GTFL_FORMAT=$(get_time_format_for_string "$@")
-    fi
-    case $GTFL_FORMAT in
-        syslog|legacy|iso8601)
-            get_time $(echo "$@" | get_time_${GTFL_FORMAT})
-            ;;
-        *)
-            warning "Unknown time format in: $@"
-            ;;
-    esac
-}
-
-get_first_time() {
-    l=""
-    format=$1
-    while read l; do
-        ts=$(get_time_from_line "$format" "$l")
-	if [ "x$ts" != x ]; then
-	    echo "$ts"
-	    return
-	fi
-    done
-}
-
-get_last_time() {
-    l=""
-    best=`date +%s` # Now
-    format=$1
-    while read l; do
-        ts=$(get_time_from_line "$format" "$l")
-	if [ "x$ts" != x ]; then
-	    best=$ts
-	fi
-    done
-    echo $best
-}
-
 linetime() {
-    get_time_from_line "" $(tail -n +$2 $1 | grep -a ":[0-5][0-9]:" | head -n 1)
+    time_from_log_entry($(tail -n +$2 $1 | grep -a ":[0-5][0-9]:" | head -n 1), some_year)
 }
 
 node_events() {
