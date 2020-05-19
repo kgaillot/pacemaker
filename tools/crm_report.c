@@ -1449,14 +1449,54 @@ extract_from_logs(const char *log_basepath, time_t start, time_t end,
  */
 
 static void
+create_report_subdir()
+{
+    char *report_subdir = NULL;
+
+    debug("Initializing %s subdirectory", host);
+
+    // Each collection target has its own subdirectory of the report home
+    report_subdir = crm_strdup_printf("%s/%s", report_home, host);
+
+    // If target subdirectory already exists, use a temporary directory instead
+    if (file_exists(report_subdir)) {
+        free(report_subdir);
+        report_subdir = crm_strdup_printf("%s/crm_report-%s-XXXXXX",
+                                          pcmk__get_tmpdir(), host);
+        if (mkdtemp(report_subdir) == NULL) {
+            fatal("Could not create temporary directory: %s", strerror(errno));
+            return; // Not reached
+        }
+        warning("Directory %s/%s already exists, using %s instead",
+                report_home, host, report_subdir);
+
+    } else {
+        int rc = pcmk__build_path(report_subdir, 0755);
+
+        if (rc != pcmk_rc_ok) {
+            fatal("Could not create report subdirectory %s: %s",
+                  report_subdir, pcmk_rc_str(rc));
+            return; // Not reached
+        }
+    }
+    if (chdir(report_subdir) < 0) {
+        fatal("Could not change to report subdirectory %s: %s",
+              report_subdir, strerror(errno));
+        return; // Not reached
+    }
+    free(report_subdir);
+}
+
+static void
 collect_locally(time_t start, time_t end)
 {
     debug("Collect locally on %s to %s", shorthost, report_home);
+    create_report_subdir();
 
     // Reset report location to local collector
     set_report(false);
 
-    // @WIP do equivalent of report.collector
+    // @WIP do equivalent of remaining report.collector
 }
 
 static void
@@ -1475,11 +1515,10 @@ collect_remotely(const char *node, const char *remote_base_dir,
     time2str(to_str, sizeof(to_str), "%FT%T", options.to_time);
 
     call = g_string_sized_new(128);
-    g_string_printf(call,
-                    "%s -l %s %s -- \"mkdir -p %s; crm_report"
+    g_string_printf(call, "%s -l %s %s -- \"crm_report"
                     " --from-time %s --to-time %s --max-depth %d"
                     " --dest '%s' --collect '%d:%s:'\"",
-                    options.shell, options.user, node, remote_base_dir,
+                    options.shell, options.user, node,
                     from_str, to_str, options.depth,
                     remote_base_dir, REPORT_PROTO, host);
     if (options.no_search) {
@@ -1981,166 +2020,6 @@ kernel-default kernel-pae kernel-xen
 glibc
 "
 
-# Whether pacemaker-remoted was found (0 = yes, 1 = no, -1 = haven't looked yet)
-REMOTED_STATUS=-1
-
-has_remoted() {
-    if [ $REMOTED_STATUS -eq -1 ]; then
-        REMOTED_STATUS=1
-        if which pacemaker-remoted >/dev/null 2>&1; then
-            REMOTED_STATUS=0
-        # Check for pre-2.0.0 daemon name in case we have mixed-version cluster
-        elif which pacemaker_remoted >/dev/null 2>&1; then
-            REMOTED_STATUS=0
-        elif [ -x "@sbindir@/pacemaker-remoted" ]; then
-            REMOTED_STATUS=0
-        elif [ -x "@sbindir@/pacemaker_remoted" ]; then
-            REMOTED_STATUS=0
-        else
-            # @TODO: the binary might be elsewhere,
-            # but a global search is too expensive
-            for d in /{usr,opt}/{local/,}{s,}bin; do
-                if [ -x "${d}/pacemaker-remoted" ]; then
-                    REMOTED_STATUS=0
-                elif [ -x "${d}/pacemaker_remoted" ]; then
-                    REMOTED_STATUS=0
-                fi
-            done
-        fi
-    fi
-    return $REMOTED_STATUS
-}
-
-# found_dir <description> <dirname>
-found_dir() {
-    echo "$2"
-    info "Pacemaker $1 found in: $2"
-}
-
-detect_daemon_dir() {
-    info "Searching for where Pacemaker daemons live... this may take a while"
-
-    for d in \
-        {/usr,/usr/local,/opt/local,@exec_prefix@}/{libexec,lib64,lib}/pacemaker
-    do
-        # pacemaker and pacemaker-cts packages can install to daemon directory,
-        # so check for a file from each
-        if [ -e $d/pacemaker-schedulerd ] || [ -e $d/cts-exec-helper ]; then
-            found_dir "daemons" "$d"
-            return
-        fi
-    done
-
-    # Pacemaker Remote nodes don't need to install daemons
-    if has_remoted; then
-        info "Pacemaker daemons not found (this appears to be a Pacemaker Remote node)"
-        return
-    fi
-
-    for f in $(find / -maxdepth $options.depth -type f -name pacemaker-schedulerd -o -name cts-exec-helper); do
-        d=$(dirname "$f")
-        found_dir "daemons" "$d"
-        return
-    done
-
-    fatal "Pacemaker daemons not found (nonstandard installation?)"
-}
-
-detect_cib_dir() {
-    d="${local_state_dir}/lib/pacemaker/cib" 
-    if [ -f "$d/cib.xml" ]; then
-        found_dir "config files" "$d"
-        return
-    fi
-
-    # Pacemaker Remote nodes don't need a CIB
-    if has_remoted; then
-        info "Pacemaker config not found (this appears to be a Pacemaker Remote node)"
-        return
-    fi
-
-    info "Searching for where Pacemaker keeps config information... this may take a while"
-    # TODO: What about false positives where someone copied the CIB?
-    for f in $(find / -maxdepth $options.depth -type f -name cib.xml); do
-        d=$(dirname $f)
-        found_dir "config files" "$d"
-        return
-    done
-
-    warning "Pacemaker config not found (nonstandard installation?)"
-}
-
-detect_state_dir() {
-    if [ -n "$CRM_CONFIG_DIR" ]; then
-        # Assume new layout
-        # $local_state_dir/lib/pacemaker/(cib,pengine,blackbox,cores)
-        dirname "$CRM_CONFIG_DIR"
-
-    # Pacemaker Remote nodes might not have a CRM_CONFIG_DIR
-    elif [ -d "$local_state_dir/lib/pacemaker" ]; then
-        echo $local_state_dir/lib/pacemaker
-    fi
-}
-
-detect_pe_dir() {
-    config_root="$1"
-
-    d="$config_root/pengine"
-    if [ -d "$d" ]; then
-        found_dir "scheduler inputs" "$d"
-        return
-    fi
-
-    if has_remoted; then
-        info "Pacemaker scheduler inputs not found (this appears to be a Pacemaker Remote node)"
-        return
-    fi
-
-    info "Searching for where Pacemaker keeps scheduler inputs... this may take a while"
-    for d in $(find / -maxdepth $options.depth -type d -name pengine); do
-        found_dir "scheduler inputs" "$d"
-        return
-    done
-
-    fatal "Pacemaker scheduler inputs not found (nonstandard installation?)"
-}
-
-detect_host() {
-    local_state_dir=@localstatedir@
-
-    if [ -d $local_state_dir/run ]; then
-	CRM_STATE_DIR=$local_state_dir/run/crm
-    else
-        info "Searching for where Pacemaker keeps runtime data... this may take a while"
-	for d in `find / -maxdepth $options.depth -type d -name run`; do
-	    local_state_dir=`dirname $d`
-	    CRM_STATE_DIR=$d/crm
-	    break
-	done
-	info "Found: $CRM_STATE_DIR"
-    fi
-    debug "Machine runtime directory: $local_state_dir"
-    debug "Pacemaker runtime data located in: $CRM_STATE_DIR"
-
-    CRM_DAEMON_DIR=$(detect_daemon_dir)
-    CRM_CONFIG_DIR=$(detect_cib_dir)
-    config_root=$(detect_state_dir)
-
-    # Older versions had none
-    BLACKBOX_DIR=$config_root/blackbox
-    debug "Pacemaker blackboxes (if any) located in: $BLACKBOX_DIR"
-
-    PCMK_SCHEDULER_INPUT_DIR=$(detect_pe_dir "$config_root")
-
-    CRM_CORE_DIRS=""
-    for d in $config_root/cores $local_state_dir/lib/corosync; do
-	if [ -d $d ]; then
-	    CRM_CORE_DIRS="$CRM_CORE_DIRS $d"
-	fi
-    done
-    debug "Core files located under: $CRM_CORE_DIRS"
-}
-
 linetime() {
     time_from_log_entry($(tail -n +$2 $1 | grep -a ":[0-5][0-9]:" | head -n 1), some_year)
 }
@@ -2273,17 +2152,6 @@ export LC_ALL
 
 
 ## report.collector.in
-
-if
-    echo $report_home | grep -qs '^/'
-then
-    debug "Using full path to working directory: $report_home"
-else
-    report_home="$HOME/$report_home"
-    debug "Canonicalizing working directory path: $report_home"
-fi
-
-detect_host
 
 #
 # find files newer than a and older than b
@@ -2419,9 +2287,9 @@ findbinary() {
     fi
     fullpath=`which $binary 2>/dev/null`
     if [ x = x"$fullpath" ]; then
-	if [ -x $CRM_DAEMON_DIR/$binary ]; then
-	    echo $CRM_DAEMON_DIR/$binary
-	    debug "Found the program at $CRM_DAEMON_DIR/$binary for core $1"
+	if [ -x CRM_DAEMON_DIR/$binary ]; then
+	    echo CRM_DAEMON_DIR/$binary
+	    debug "Found the program at CRM_DAEMON_DIR/$binary for core $1"
 	else
 	    warning "Could not find the program path for core $1"
 	fi
@@ -2640,7 +2508,7 @@ pkg_ver() {
 getbacktraces() {
     debug "Looking for backtraces: $*"
     flist=$(
-	for f in `find_files "$CRM_CORE_DIRS" $1 $2`; do
+	for f in `find_files CRM_CORE_DIR "@localstatedir@/lib/corosync" $1 $2`; do
 	    bf=`basename $f`
 	    test `expr match $bf core` -gt 0 &&
 	    echo $f
@@ -2678,7 +2546,7 @@ getpeinputs() {
 
 getblackboxes() {
     flist=$(
-	find_files $BLACKBOX_DIR $1 $2
+	find_files CRM_BLACKBOX_DIR $1 $2
     )
 
     for bb in $flist; do
@@ -3011,15 +2879,6 @@ collect_logs() {
     rm -f $cl_pattfile
     trap "" 0
 }
-
-debug "Initializing $host subdir"
-if [ -e $report_home/$host ]; then
-    warning "Directory $report_home/$host already exists, using /tmp/$$/$host instead"
-    report_home=/tmp/$$
-fi
-
-mkdir -p $report_home/$host
-cd $report_home/$host
 
 if options.cluster_type == cluster_any
     options.cluster_type=`detect_cluster_type`;;
