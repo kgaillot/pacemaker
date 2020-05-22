@@ -27,6 +27,7 @@ static char *report_home = NULL;
 static FILE *report_file = NULL;
 
 static crm_exit_t finish(crm_exit_t exit_code);
+static void time2str(char *s, size_t n, const char *fmt, time_t t);
 
 /*
  * Command-line option parsing
@@ -490,6 +491,9 @@ handle_common_args(int argc, char **argv)
 
 /*
  * User messaging
+ *
+ * crm_report handles user output differently than other Pacemaker command-line
+ * tools; messages are both displayed to the user and written to a report file.
  */
 
 static void
@@ -514,61 +518,133 @@ set_report(bool summary)
     free(report_name);
 }
 
+/*!
+ * \internal
+ * \brief Log a message to the report summary and/or the user
+ *
+ * If the report summary has been opened, the given message will always be
+ * logged there. If requested, and the output object has been opened, the
+ * message will also be shown to the user, as error output if log_level is
+ * LOG_ERR, or as normal output otherwise.
+ *
+ * \param[in] log_level  Severity of message
+ * \param[in] file_only  If true, do not show message to user
+ * \param[in] format     printf(3)-style format
+ * \param[in] ...        format arguments
+ */
+static void
+record_message(int log_level, bool file_only, const char *format, ...)
+{
+    va_list ap;
+    int len = 0;
+    char *str = NULL;
+    char *message = NULL;
+    const char *prefix = NULL;
+    bool as_err = false;
+    static char *tag = NULL;
+
+    if ((options.out == NULL) && (report_file == NULL)) {
+        return;
+    }
+
+    switch (log_level) {
+        case LOG_DEBUG:
+            prefix = "Debug: ";
+            break;
+        case LOG_WARNING:
+            prefix = "WARN: ";
+            break;
+        case LOG_ERR:
+            prefix = "ERROR: ";
+            as_err = true;
+            break;
+        default:
+            prefix = "";
+            break;
+    }
+
+    // Get the desired message as a string
+    va_start(ap, format);
+    len = vasprintf(&str, format, ap);
+    if (len <= 0) {
+        va_end(ap);
+        return;
+    }
+
+    // Tag the message with host name and prefix
+    if ((tag == NULL) && (shorthost != NULL)) {
+        tag = crm_strdup_printf("%s:", shorthost);
+    }
+    message = crm_strdup_printf("%-10s  %s%s",
+                                (tag? tag : "localhost:"), prefix, str);
+    free(str);
+
+    // If desired, show message to user
+    if (!file_only && options.out) {
+        if (as_err) {
+            options.out->err(options.out, "%s", message);
+        } else {
+            options.out->info(options.out, "%s", message);
+        }
+    }
+
+    // If we have an open report, write message to it
+    if (report_file != NULL) {
+        fprintf(report_file, "%s\n", message);
+    }
+    free(message);
+    va_end(ap);
+}
+
+#define info(fmt, fmtargs...) record_message(LOG_INFO, false, fmt, ##fmtargs)
+
+#define debug(fmt, fmtargs...) record_message(LOG_DEBUG,                        \
+                                              (options.args->verbosity == 0),   \
+                                              fmt, ##fmtargs)
+
+#define warning(fmt, fmtargs...) record_message(LOG_WARNING, false, fmt, ##fmtargs)
+
+#define fatal(fmt, args...) do {                        \
+        record_message(LOG_ERR, false, fmt, ##args);    \
+        exit(finish(CRM_EX_ERROR));                     \
+    } while (0)
+
 static void
 log_options(void)
 {
-    // @WIP For now, just print out parsed options
-    printf("Summary: %s\n", options.args->summary? options.args->summary : "(none)");
-    printf("Show version? %s\n", options.args->version? "yes" : "no");
-    printf("Quiet? %s\n", options.args->quiet? "yes" : "no");
-    printf("Verbosity: %d\n", options.args->verbosity);
-    printf("Output type: %s\n", options.args->output_ty? options.args->output_ty : "(none)");
-    printf("Output destination: %s\n", options.args->output_dest? options.args->output_dest : "(none)");
-    printf("Context: %s\n", options.context? "exists" : "does not exist");
-    for (int argi = 0; options.processed_args[argi] != NULL; ++argi) {
-        printf("Processed arg %d: %s\n", argi, options.processed_args[argi]);
-    }
-    printf("Output object: %s\n", options.out? "exists" : "does not exist");
-    printf("Show help? %s\n", options.show_help? "yes" : "no");
-    printf("Show features? %s\n", options.show_features? "yes" : "no");
-    printf("Skip searching? %s\n", options.no_search? "yes" : "no");
-    printf("Single node? %s\n", options.single_node? "yes" : "no");
-    printf("SOS mode? %s\n", options.sos? "yes" : "no");
-    printf("Deprecated option used? %s\n", options.deprecated? "yes" : "no");
+    int i;
+    char from_str[1024] = { '\0', };
+    char to_str[1024] = { '\0', };
 
-    {
-        char from_str[1024] = { '\0', };
-        char to_str[1024] = { '\0', };
+    record_message(LOG_INFO, true, "Options in effect:");
+    record_message(LOG_INFO, true, "* %s for cluster logs",
+                   (options.no_search? "Do not search" : "Search"));
 
-        time2str(from_str, sizeof(from_str), "%x %X", options.from_time);
-        time2str(to_str, sizeof(to_str), "%x %X", options.to_time);
+    time2str(from_str, sizeof(from_str), "%x %X", options.from_time);
+    time2str(to_str, sizeof(to_str), "%x %X", options.to_time);
+    record_message(LOG_INFO, true, "* Times: @%lld (%s) to @%lld (%s)",
+                   (long long) options.from_time, from_str,
+                   (long long) options.to_time, to_str);
 
-        printf("Times: %lld (%s) to %lld (%s)\n",
-               (long long) options.from_time, from_str,
-               (long long) options.to_time, to_str);
+    record_message(LOG_INFO, true, "* Remote execution: %s -u %s",
+                   options.shell, options.user);
+    record_message(LOG_INFO, true, "* Cluster type: %s",
+                   cluster2str(options.cluster_type));
+    record_message(LOG_INFO, true, "* Max. search depth: %d", options.depth);
+    for (i = 0; options.logfile && options.logfile[i]; ++i) {
+        record_message(LOG_INFO, true, "* Additional log: %s",
+                       options.logfile[i]);
     }
-
-    printf("Remote user: %s\n", options.user);
-    printf("Remote shell: %s\n", options.shell);
-    printf("Cluster type: %s\n", cluster2str(options.cluster_type));
-    printf("Destination: %s\n", options.dest);
-    printf("Max. search depth: %d\n", options.depth);
-    for (int i = 0; options.logfile && options.logfile[i]; ++i) {
-        printf("Additional log: %s\n", options.logfile[i]);
+    for (i = 0; options.sanitize && options.sanitize[i]; ++i) {
+        record_message(LOG_INFO, true, "* Sanitize pattern: %s",
+                       options.sanitize[i]);
     }
-    for (int i = 0; options.sanitize && options.sanitize[i]; ++i) {
-        printf("Sanitize pattern: %s\n", options.sanitize[i]);
-    }
-    for (int i = 0; options.analysis && options.analysis[i]; ++i) {
-        printf("Log pattern: %s\n", options.analysis[i]);
+    for (i = 0; options.analysis && options.analysis[i]; ++i) {
+        record_message(LOG_INFO, true, "* Log pattern: %s", options.analysis[i]);
     }
     for (GList *nodei = options.nodes; nodei != NULL; nodei = nodei->next) {
-        printf("Node: %s\n", (const char *) nodei->data);
+        record_message(LOG_INFO, true, "* Node: %s", (const char *) nodei->data);
     }
-    for (GList *ctsi = options.cts; ctsi != NULL; ctsi = ctsi->next) {
-        printf("CTS test: %s\n", (const char *) ctsi->data);
-    }
-    printf("CTS log: %s\n", options.cts_log? options.cts_log : "(none)");
 }
 
 
@@ -686,18 +762,21 @@ main(int argc, char **argv)
     if (options.single_node || options.sos) {
         if (options.nodes != NULL) {
             // @TODO error and exit CRM_EX_USAGE (at a new series release)
-            options.out->info(options.out,
-                              "WARNING: --nodes is ignored with %s",
-                              options.single_node? "--single-node" : "--sos-mode");
+            warning("--nodes is ignored with %s",
+                    (options.single_node? "--single-node" : "--sos-mode"));
             g_list_free_full(options.nodes, free);
         }
         options.nodes = g_list_prepend(NULL, strdup(host));
     }
 
-    // @WIP For now, define a log file for testing
+    // @WIP For now, define a log file for testing, and record some messages
     report_home = strdup("report-test");
     set_report(true);
     log_options();
+    info("This is an info message");
+    debug("This is a debug message");
+    warning("This is a warning message");
+    fatal("This is a fatal message");
 
     // @WIP Nothing is implemented yet
     exit_code = CRM_EX_UNIMPLEMENT_FEATURE;
@@ -763,48 +842,6 @@ SYSLOGS="
 
 # Whether pacemaker-remoted was found (0 = yes, 1 = no, -1 = haven't looked yet)
 REMOTED_STATUS=-1
-
-#
-# keep the user posted
-#
-record() {
-    if [ x != x"$REPORT_HOME" -a -d "${REPORT_HOME}/$shorthost" ]; then
-        rec="${REPORT_HOME}/$shorthost/report.out"
-
-    elif [ x != x"${report_home}" -a -d "${report_home}" ]; then
-        rec="${report_home}/report.summary"
-
-    else
-        rec="/dev/null"
-    fi
-    printf "%-10s  $*\n" "$shorthost:" 2>&1 >> "${rec}"
-}
-
-log() {
-    printf "%-10s  $*\n" "$shorthost:" 1>&2
-    record "$*"
-}
-
-debug() {
-    if [ $options.args->verbosity -gt 0 ]; then
-	log "Debug: $*"
-    else
-        record "Debug: $*"
-    fi
-}
-
-info() {
-    log "$*"
-}
-
-warning() {
-    log "WARN: $*"
-}
-
-fatal() {
-    log "ERROR: $*"
-    exit 1
-}
 
 require_tar() {
     which tar >/dev/null 2>&1
@@ -1405,13 +1442,13 @@ print_logseg() {
 		fi
 		if [ $FROM_LINE -lt $TO_LINE ]; then
 		    dumplog $sourcef $FROM_LINE $TO_LINE
-		    log "Including segment [$FROM_LINE-$TO_LINE] from $logf"
+		    info "Including segment [$FROM_LINE-$TO_LINE] from $logf"
 		else
 		    debug "Empty segment [$FROM_LINE-$TO_LINE] from $logf"
 		fi
 	else
 	    dumplog $sourcef $FROM_LINE $TO_LINE
-	    log "Including all logs after line $FROM_LINE from $logf"
+	    info "Including all logs after line $FROM_LINE from $logf"
 	fi
 	drop_tmp_file
 	trap "" 0
@@ -1941,7 +1978,7 @@ getbacktraces() {
 	done)
     if [ "$flist" ]; then
 	for core in $flist; do
-	    log "Found core file: `ls -al $core`"
+	    info "Found core file: `ls -al $core`"
 	done
 
 	# Make a copy of them in case we need more data later
@@ -2410,7 +2447,7 @@ for f in `ls -1`; do
 	continue
     elif [ ! -s "$f" ]; then
         case $f in
-	    *core*) log "Detected empty core file: $f";;
+	    *core*) info "Detected empty core file: $f";;
 	    *)	    debug "Removing empty file: `ls -al $f`"
 		    rm -f $f
 		    ;;
@@ -2517,21 +2554,21 @@ EOF
 	fi
     done
 
-    log " "
+    info " "
     if [ $options.as_dir -ne 1 ]; then
 	fname=`shrink $report_home`
 	rm -rf $report_home
-	log "Collected results are available in $fname"
-	log " "
-	log "Please create a bug entry at"
-	log "    @BUG_URL@"
-	log "Include a description of your problem and attach this tarball"
-	log " "
-	log "Thank you for taking time to create this report."
+	info "Collected results are available in $fname"
+	info " "
+	info "Please create a bug entry at"
+	info "    @BUG_URL@"
+	info "Include a description of your problem and attach this tarball"
+	info " "
+	info "Thank you for taking time to create this report."
     else
-	log "Collected results are available in $report_home"
+	info "Collected results are available in $report_home"
     fi
-    log " "
+    info " "
 }
 
 #
@@ -2652,7 +2689,7 @@ do_cts() {
 	    if [ x$options.cts_log = x ]; then
 		fatal "No CTS control file detected"
 	    else
-		log "Using CTS control file: $options.cts_log"
+		info "Using CTS control file: $options.cts_log"
 	    fi
 	fi
 
@@ -2668,7 +2705,7 @@ do_cts() {
 
 	if [ -z "$options.nodes" ]; then
 	    options.nodes=`grep CTS: $options.cts_log | grep -v debug: | grep " \* " | sed s:.*\\\*::g | sort -u  | tr '\\n' ' '`
-	    log "Calculated node list: $options.nodes"
+	    info "Calculated node list: $options.nodes"
 	fi
 
 	if [ $end_time -lt $start_time ]; then
@@ -2677,7 +2714,7 @@ do_cts() {
 	fi
 
 	if [ $start_time != 0 ];then
-	    log "$msg (`time2str $start_time` to `time2str $end_time`)"
+	    info "$msg (`time2str $start_time` to `time2str $end_time`)"
 	    collect_data $label $start_time $end_time $options.cts_log
 	else
 	    fatal "$msg failed: not found"
@@ -2736,17 +2773,17 @@ elif [ "x$options.from_time" != "x" ]; then
     masterlog=""
 
     if [ -z "$options.sanitize" ]; then
-	log "WARNING: The tarball produced by this program may contain"
-	log "         sensitive information such as passwords."
-	log ""
-	log "We will attempt to remove such information if you use the"
-	log "-p option. For example: -p \"pass.*\" -p \"user.*\""
-	log ""
-	log "However, doing this may reduce the ability for the recipients"
-	log "to diagnose issues and generally provide assistance."
-	log ""
-	log "IT IS YOUR RESPONSIBILITY TO PROTECT SENSITIVE DATA FROM EXPOSURE"
-	log ""
+	info "WARNING: The tarball produced by this program may contain"
+	info "         sensitive information such as passwords."
+	info ""
+	info "We will attempt to remove such information if you use the"
+	info "-p option. For example: -p \"pass.*\" -p \"user.*\""
+	info ""
+	info "However, doing this may reduce the ability for the recipients"
+	info "to diagnose issues and generally provide assistance."
+	info ""
+	info "IT IS YOUR RESPONSIBILITY TO PROTECT SENSITIVE DATA FROM EXPOSURE"
+	info ""
     fi
 
     # If user didn't specify a cluster stack, make a best guess if possible.
@@ -2758,7 +2795,7 @@ elif [ "x$options.from_time" != "x" ]; then
     if [ -z "$options.nodes" ]; then
 	options.nodes=`getnodes $options.cluster_type`
         if [ -n "$options.nodes" ]; then
-            log "Calculated node list: $options.nodes"
+            info "Calculated node list: $options.nodes"
         else
             fatal "Cannot determine nodes; specify --nodes or --single-node"
         fi
@@ -2775,7 +2812,7 @@ elif [ "x$options.from_time" != "x" ]; then
 
 
     label="pcmk-`date +"%a-%d-%b-%Y"`"
-    log "Collecting data from $options.nodes (`time2str $options.from_time` to `time2str $options.to_time`)"
+    info "Collecting data from $options.nodes (`time2str $options.from_time` to `time2str $options.to_time`)"
     collect_data $label $options.from_time $options.to_time $masterlog
 else
     fatal "Not sure what to do, no tests or time ranges to extract"
