@@ -14,6 +14,7 @@
 #include <string.h>
 #include <time.h>
 #include <glib.h>
+#include <sys/stat.h>
 
 #include <crm/crm.h>
 #include <crm/common/cmdline_internal.h>
@@ -22,6 +23,10 @@
 
 static char *host = NULL;
 static char *shorthost = NULL;
+static char *report_home = NULL;
+static FILE *report_file = NULL;
+
+static crm_exit_t finish(crm_exit_t exit_code);
 
 /*
  * Command-line option parsing
@@ -488,6 +493,28 @@ handle_common_args(int argc, char **argv)
  */
 
 static void
+set_report(bool summary)
+{
+    char *report_name = NULL;
+
+    /* The report initiator keeps a main report summary directly under the
+     * report home, and collection reports for each host (including the
+     * initiator itself, if it is a node) in subdirectories by hostname.
+     */
+    if (summary) {
+        report_name = crm_strdup_printf("%s/report.summary", report_home);
+    } else {
+        report_name = crm_strdup_printf("%s/%s/report.out", report_home, host);
+    }
+
+    if (report_file != NULL) {
+        fclose(report_file);
+    }
+    report_file = fopen(report_name, "w");
+    free(report_name);
+}
+
+static void
 log_options(void)
 {
     // @WIP For now, just print out parsed options
@@ -610,6 +637,10 @@ time2str(char *s, size_t n, const char *fmt, time_t t)
 static crm_exit_t
 finish(crm_exit_t exit_code)
 {
+    if (report_file != NULL) {
+        fclose(report_file);
+    }
+
     g_strfreev(options.processed_args);
     g_option_context_free(options.context);
     if (options.out != NULL) {
@@ -629,6 +660,7 @@ finish(crm_exit_t exit_code)
 
     free(host);
     free(shorthost);
+    free(report_home);
 
     return exit_code;
 }
@@ -662,9 +694,10 @@ main(int argc, char **argv)
         options.nodes = g_list_prepend(NULL, strdup(host));
     }
 
-    // @WIP Just print hostname for now
+    // @WIP For now, define a log file for testing
+    report_home = strdup("report-test");
+    set_report(true);
     log_options();
-    printf("Host name is %s (%s for short)\n", host, shorthost);
 
     // @WIP Nothing is implemented yet
     exit_code = CRM_EX_UNIMPLEMENT_FEATURE;
@@ -738,8 +771,8 @@ record() {
     if [ x != x"$REPORT_HOME" -a -d "${REPORT_HOME}/$shorthost" ]; then
         rec="${REPORT_HOME}/$shorthost/report.out"
 
-    elif [ x != x"${l_base}" -a -d "${l_base}" ]; then
-        rec="${l_base}/report.summary"
+    elif [ x != x"${report_home}" -a -d "${report_home}" ]; then
+        rec="${report_home}/report.summary"
 
     else
         rec="/dev/null"
@@ -1536,12 +1569,12 @@ export LC_ALL
 ## report.collector.in
 
 if
-    echo $REPORT_HOME | grep -qs '^/'
+    echo $report_home | grep -qs '^/'
 then
-    debug "Using full path to working directory: $REPORT_HOME"
+    debug "Using full path to working directory: $report_home"
 else
-    REPORT_HOME="$HOME/$REPORT_HOME"
-    debug "Canonicalizing working directory path: $REPORT_HOME"
+    report_home="$HOME/$report_home"
+    debug "Canonicalizing working directory path: $report_home"
 fi
 
 detect_host
@@ -2277,14 +2310,14 @@ require_tar
 
 debug "Initializing $REPORT_TARGET subdir"
 if [ "$REPORT_MASTER" != "$REPORT_TARGET" ]; then
-  if [ -e $REPORT_HOME/$REPORT_TARGET ]; then
-    warning "Directory $REPORT_HOME/$REPORT_TARGET already exists, using /tmp/$$/$REPORT_TARGET instead"
-    REPORT_HOME=/tmp/$$
+  if [ -e $report_home/$REPORT_TARGET ]; then
+    warning "Directory $report_home/$REPORT_TARGET already exists, using /tmp/$$/$REPORT_TARGET instead"
+    report_home=/tmp/$$
   fi
 fi
 
-mkdir -p $REPORT_HOME/$REPORT_TARGET
-cd $REPORT_HOME/$REPORT_TARGET
+mkdir -p $report_home/$REPORT_TARGET
+cd $report_home/$REPORT_TARGET
 
 case $CLUSTER in
     cluster_any) options.cluster_type=`get_cluster_type`;;
@@ -2318,11 +2351,11 @@ debug "Config: $options.cluster_type ($cluster_cf) $logfiles"
 
 sys_info $options.cluster_type $PACKAGES > $SYSINFO_F
 essential_files $options.cluster_type | check_perms  > $PERMISSIONS_F 2>&1
-getconfig $options.cluster_type "$REPORT_HOME/$REPORT_TARGET" "$cluster_cf" "$CRM_CONFIG_DIR/$CIB_F" "/etc/drbd.conf" "/etc/drbd.d" "/etc/booth"
+getconfig $options.cluster_type "$report_home/$REPORT_TARGET" "$cluster_cf" "$CRM_CONFIG_DIR/$CIB_F" "/etc/drbd.conf" "/etc/drbd.d" "/etc/booth"
 
-getpeinputs    $LOG_START $LOG_END $REPORT_HOME/$REPORT_TARGET
-getbacktraces  $LOG_START $LOG_END > $REPORT_HOME/$REPORT_TARGET/$BT_F
-getblackboxes  $LOG_START $LOG_END $REPORT_HOME/$REPORT_TARGET
+getpeinputs    $LOG_START $LOG_END $report_home/$REPORT_TARGET
+getbacktraces  $LOG_START $LOG_END > $report_home/$REPORT_TARGET/$BT_F
+getblackboxes  $LOG_START $LOG_END $report_home/$REPORT_TARGET
 
 case $options.cluster_type in
     corosync)
@@ -2366,7 +2399,7 @@ done
 # in it (AFTER sanitizing, so we don't need to sanitize this output).
 # sosreport does this itself, so we do not need to when run by sosreport.
 if [ "$SOS_MODE" != "1" ]; then
-    get_readable_cib "$REPORT_HOME/$REPORT_TARGET"
+    get_readable_cib "$report_home/$REPORT_TARGET"
 fi
 
 collect_logs "$LOG_START" "$LOG_END" $logfiles
@@ -2396,15 +2429,15 @@ for l in $logfiles; do
     fi
 done
 
-if [ -e $REPORT_HOME/.env ]; then
+if [ -e $report_home/.env ]; then
     debug "Localhost: $REPORT_MASTER $REPORT_TARGET"
 
 elif [ "$REPORT_MASTER" != "$REPORT_TARGET" ]; then
     debug "Streaming report back to $REPORT_MASTER"
-    (cd $REPORT_HOME && tar cf - $REPORT_TARGET)
+    (cd $report_home && tar cf - $REPORT_TARGET)
     if [ "$REMOVE" = "1" ]; then
 	cd
-	rm -rf $REPORT_HOME
+	rm -rf $report_home
     fi
 fi
 
@@ -2419,30 +2452,30 @@ collect_data() {
     if [ "x$options.dest" != x ]; then
 	echo $options.dest | grep -e "^/" -qs
 	if [ $? = 0 ]; then
-	    l_base=$options.dest
+	    report_home=$options.dest
 	else
-	    l_base="`pwd`/$options.dest"
+	    report_home="`pwd`/$options.dest"
 	fi
-	debug "Using custom scratch dir: $l_base"
-	r_base=`basename $l_base`
+	debug "Using custom scratch dir: $report_home"
+	r_base=`basename $report_home`
     else
-	l_base=$HOME/$label
+	report_home=$HOME/$label
 	r_base=$label
     fi
 
-    if [ -e $l_base ]; then
-	fatal "Output directory $l_base already exists, specify an alternate name with --dest"
+    if [ -e $report_home ]; then
+	fatal "Output directory $report_home already exists, specify an alternate name with --dest"
     fi
-    mkdir -p $l_base
+    mkdir -p $report_home
 
     if [ "x$masterlog" != "x" ]; then
-	dumplogset "$masterlog" $start $end > "$l_base/$HALOG_F"
+	dumplogset "$masterlog" $start $end > "$report_home/$HALOG_F"
     fi
 
     for node in $options.nodes; do
-	cat <<EOF >$l_base/.env
+	cat <<EOF >$report_home/.env
 LABEL="$label"
-REPORT_HOME="$r_base"
+report_home="$r_base"
 REPORT_MASTER="$host"
 REPORT_TARGET="$node"
 LOG_START=$start
@@ -2459,35 +2492,35 @@ maxdepth=$options.depth
 EOF
 
 	if [ $host = $node ]; then
-	    cat <<EOF >>$l_base/.env
-REPORT_HOME="$l_base"
+	    cat <<EOF >>$report_home/.env
+report_home="$report_home"
 EOF
-	    cat $l_base/.env $report_data/report.common $report_data/report.collector > $l_base/collector
-	    bash $l_base/collector
+	    cat $report_home/.env $report_data/report.common $report_data/report.collector > $report_home/collector
+	    bash $report_home/collector
 	else
-	    cat $l_base/.env $report_data/report.common $report_data/report.collector \
-		| $options.shell -l $options.user $node -- "mkdir -p $r_base; cat > $r_base/collector; bash $r_base/collector" | (cd $l_base && tar mxf -)
+	    cat $report_home/.env $report_data/report.common $report_data/report.collector \
+		| $options.shell -l $options.user $node -- "mkdir -p $r_base; cat > $r_base/collector; bash $r_base/collector" | (cd $report_home && tar mxf -)
 	fi
     done
 
-    analyze $l_base > $l_base/$ANALYSIS_F
-    if [ -f $l_base/$HALOG_F ]; then
-	node_events $l_base/$HALOG_F > $l_base/$EVENTS_F
+    analyze $report_home > $report_home/$ANALYSIS_F
+    if [ -f $report_home/$HALOG_F ]; then
+	node_events $report_home/$HALOG_F > $report_home/$EVENTS_F
     fi
 
     for node in $options.nodes; do
-	cat $l_base/$node/$ANALYSIS_F >> $l_base/$ANALYSIS_F
-	if [ -s $l_base/$node/$EVENTS_F ]; then
-	    cat $l_base/$node/$EVENTS_F >> $l_base/$EVENTS_F
-	elif [ -s $l_base/$HALOG_F ]; then
-	    awk "\$4==\"$options.nodes\"" $l_base/$EVENTS_F >> $l_base/$n/$EVENTS_F
+	cat $report_home/$node/$ANALYSIS_F >> $report_home/$ANALYSIS_F
+	if [ -s $report_home/$node/$EVENTS_F ]; then
+	    cat $report_home/$node/$EVENTS_F >> $report_home/$EVENTS_F
+	elif [ -s $report_home/$HALOG_F ]; then
+	    awk "\$4==\"$options.nodes\"" $report_home/$EVENTS_F >> $report_home/$n/$EVENTS_F
 	fi
     done
 
     log " "
     if [ $options.as_dir -ne 1 ]; then
-	fname=`shrink $l_base`
-	rm -rf $l_base
+	fname=`shrink $report_home`
+	rm -rf $report_home
 	log "Collected results are available in $fname"
 	log " "
 	log "Please create a bug entry at"
@@ -2496,7 +2529,7 @@ EOF
 	log " "
 	log "Thank you for taking time to create this report."
     else
-	log "Collected results are available in $l_base"
+	log "Collected results are available in $report_home"
     fi
     log " "
 }
