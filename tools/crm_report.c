@@ -811,20 +811,6 @@ cluster_report(void)
     /*
     masterlog=""
 
-    if [ -z "$options.sanitize" ]; then
-	info "WARNING: The tarball produced by this program may contain"
-	info "         sensitive information such as passwords."
-	info ""
-	info "We will attempt to remove such information if you use the"
-	info "-p option. For example: -p \"pass.*\" -p \"user.*\""
-	info ""
-	info "However, doing this may reduce the ability for the recipients"
-	info "to diagnose issues and generally provide assistance."
-	info ""
-	info "IT IS YOUR RESPONSIBILITY TO PROTECT SENSITIVE DATA FROM EXPOSURE"
-	info ""
-    fi
-
     # If user didn't specify a cluster stack, make a best guess if possible.
     if [ -z "$options.cluster_type" ] || [ "$options.cluster_type" = "cluster_any" ]; then
         options.cluster_type=$(get_cluster_type)
