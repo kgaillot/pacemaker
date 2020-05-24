@@ -802,6 +802,83 @@ time2str(char *s, size_t n, const char *fmt, time_t t)
 
 
 /*
+ * Cluster utility functions (needed by both CTS and cluster reports)
+ */
+
+/* Check whether a process with given substring in its name is running as
+ * uid 0 or the cluster daemon user. (This assumes all cluster daemon names fit
+ * within the "ps -o comm" truncation, which is 15 characters on Linux.)
+ */
+static bool
+cluster_daemon_running(const char *command)
+{
+    FILE *pipe = NULL;
+    bool running = false;
+    char *call = NULL;
+    char line[LINE_MAX];
+    static uid_t cl_uid = 0;
+
+    if ((cl_uid == 0) && (crm_user_lookup(CRM_DAEMON_USER, &cl_uid, 0) < 0)) {
+        debug("Couldn't find user id of %s", CRM_DAEMON_USER);
+    }
+
+    call = crm_strdup_printf("ps -u \"0 %d\" -e -o comm", cl_uid);
+    pipe = popen(call, "r");
+    if (pipe == NULL) {
+        debug("Couldn't run ps to check for %s: %s",
+              command, strerror(errno));
+        goto done;
+    }
+
+    while (!feof(pipe)) {
+        if (fgets(line, LINE_MAX, pipe) == NULL) {
+            break;
+        }
+        if (!strncmp(line, command, strlen(command))) {
+            running = true;
+            break;
+        }
+    }
+
+    if (pclose(pipe) < 0) {
+        debug("Couldn't close ps pipe for %s: %s",
+              command, strerror(errno));
+    }
+
+done:
+    free(call);
+    return running;
+}
+
+/* Detect the cluster type, depending on the process list and existence of
+ * configuration files. This is comparable to libcrmcluster's
+ * get_cluster_type(), but works even if the cluster is not running, and doesn't
+ * require linking against the corosync libraries.
+ */
+static enum cluster_e
+detect_cluster_type(void)
+{
+    enum cluster_e detected = cluster_any;
+
+    // First, check whether known cluster daemons are running
+    if (cluster_daemon_running("corosync")) {
+        detected = cluster_corosync;
+
+    // If not, check for common configuration file locations
+    } else if (file_exists(PCMK__COROSYNC_CONF)) {
+        detected = cluster_corosync;
+
+    } else {
+        /* We still don't know. This might be a Pacemaker Remote node, or the
+         * configuration might be in a nonstandard location.
+         */
+    }
+    debug("Detected cluster type %s", cluster2str(detected));
+    return detected;
+}
+
+
+/*
  * Cluster report
  */
 
@@ -809,13 +886,6 @@ static crm_exit_t
 cluster_report(void)
 {
     /*
-    masterlog=""
-
-    # If user didn't specify a cluster stack, make a best guess if possible.
-    if [ -z "$options.cluster_type" ] || [ "$options.cluster_type" = "cluster_any" ]; then
-        options.cluster_type=$(get_cluster_type)
-    fi
-
     # If user didn't specify node(s), make a best guess if possible.
     if [ -z "$options.nodes" ]; then
 	options.nodes=`getnodes $options.cluster_type`
@@ -826,19 +896,20 @@ cluster_report(void)
         fi
     fi
 
+    master_log=
     if
 	echo $options.nodes | grep -qs $host
     then
 	debug "We are a cluster node"
     else
 	debug "We are a log master"
-	masterlog=`findmsg 1 "pacemaker-controld\\|CTS"`
+	master_log=`findmsg 1 "pacemaker-controld\\|CTS"`
     fi
 
 
     label="pcmk-`date +"%a-%d-%b-%Y"`"
     info "Collecting data from $options.nodes (`time2str $options.from_time` to `time2str $options.to_time`)"
-    collect_data $label $options.from_time $options.to_time $masterlog
+    collect_data $label $options.from_time $options.to_time $master_log
     */
     options.out->err(options.out, "Cluster report not implemented yet"); // @WIP
     return CRM_EX_UNIMPLEMENT_FEATURE;
@@ -995,6 +1066,11 @@ main(int argc, char **argv)
         fatal("Required program 'tar' not found, please install and re-run");
     }
 
+    // If user didn't specify a cluster type, make a best guess
+    if (options.cluster_type == cluster_any) {
+        options.cluster_type = detect_cluster_type();
+    }
+
     if (options.cts != NULL) {
         exit_code = cts_report();
 
@@ -1066,17 +1142,6 @@ SYSLOGS="
 
 # Whether pacemaker-remoted was found (0 = yes, 1 = no, -1 = haven't looked yet)
 REMOTED_STATUS=-1
-
-# check if process of given substring in its name does exist;
-# only look for processes originated by user 0 (by UID), "@CRM_DAEMON_USER@"
-# or effective user running this script, and/or group 0 (by GID),
-# "@CRM_DAEMON_GROUP@" or one of the groups the effective user belongs to
-# (there's no business in probing any other processes)
-is_running() {
-    ps -G "0 $(getent group '@CRM_DAEMON_GROUP@' 2>/dev/null | cut -d: -f3) $(id -G)" \
-       -u "0 @CRM_DAEMON_USER@ $(id -u)" -f \
-      | grep -Eqs  $(echo "$1" | sed -e 's/^\(.\)/[\1]/')
-}
 
 has_remoted() {
     if [ $REMOTED_STATUS -eq -1 ]; then
@@ -1730,35 +1795,6 @@ getcfvar() {
     esac
 }
 
-#
-# figure out the cluster type, depending on the process list
-# and existence of configuration files
-#
-get_cluster_type() {
-    if is_running corosync; then
-	tool=`first_command corosync-objctl corosync-cmapctl NULL`
-	case $tool in
-	    *objctl) quorum=`$tool -a | grep quorum.provider | sed 's@.*=\s*@@'`;;
-	    *cmapctl) quorum=`$tool | grep quorum.provider | sed 's@.*=\s*@@'`;;
-	esac
-        stack="corosync"
-
-    # Now we're guessing...
-
-    # TODO: Technically these could be anywhere :-/
-    elif [ -f "@PCMK__COROSYNC_CONF@" ]; then
-	stack="corosync"
-
-    else
-        # We still don't know. This might be a Pacemaker Remote node,
-        # or the configuration might be in a nonstandard location.
-        stack="cluster_any"
-    fi
-
-    debug "Detected the '$stack' cluster stack"
-    echo $stack
-}
-
 find_cluster_cf() {
     case $1 in
 	corosync)
@@ -1995,17 +2031,17 @@ getconfig() {
 	fi
     done
 
-    if is_running pacemaker-controld; then
+    if cluster_daemon_running pacemaker-controld; then
         dump_status_and_config
         crm_node -p > "$target/$MEMBERSHIP_F" 2>&1
 	echo "$host" > $target/RUNNING
 
-    elif is_running pacemaker-remoted; then
+    elif cluster_daemon_running pacemaker-remoted; then
         dump_status_and_config
         echo "$host" > $target/RUNNING
 
     # Pre-2.0.0 daemon name in case we're collecting on a mixed-version cluster
-    elif is_running pacemaker_remoted; then
+    elif cluster_daemon_running pacemaker_remoted; then
         dump_status_and_config
         echo "$host" > $target/RUNNING
 
@@ -2271,7 +2307,7 @@ sys_stats() {
 
 dlm_dump() {
     if which dlm_tool >/dev/null 2>&1 ; then
-      if is_running dlm_controld; then
+      if cluster_daemon_running dlm_controld; then
 	echo "--- Lockspace overview:"
 	dlm_tool ls -n
 
@@ -2552,7 +2588,7 @@ mkdir -p $report_home/$REPORT_TARGET
 cd $report_home/$REPORT_TARGET
 
 case $CLUSTER in
-    cluster_any) options.cluster_type=`get_cluster_type`;;
+    cluster_any) options.cluster_type=`detect_cluster_type`;;
     *) options.cluster_type=$CLUSTER;;
 esac
 
@@ -2591,7 +2627,7 @@ getblackboxes  $LOG_START $LOG_END $report_home/$REPORT_TARGET
 
 case $options.cluster_type in
     corosync)
-	if is_running corosync; then
+	if cluster_daemon_running corosync; then
             corosync-blackbox >corosync-blackbox-live.txt 2>&1
 #           corosync-fplay > corosync-blackbox.txt
             tool=`first_command corosync-objctl corosync-cmapctl NULL`
