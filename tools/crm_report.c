@@ -1487,16 +1487,124 @@ create_report_subdir()
     free(report_subdir);
 }
 
+/*
+ * \internal
+ * \brief Find files matching some criteria beneath a given directory
+ *
+ * \param[in,out] files       Head of existing list to prepend matching files to
+ * \param[in]     directory   Directory to search
+ * \param[in]     depth       Limit search to this many subdirectory levels
+ * \param[in]     filename    If not NULL, match files with this name
+ * \param[in]     prefix      If not NULL, match file names starting with this
+ * \param[in]     from_mtime  If not zero, match only files modified after this
+ * \param[in]     to_mtime    If not zero, match only files modified up to this
+ * \param[in]     max_files   Return after matching this many files
+ *
+ * \return New (possibly changed) head of files list
+ * \note This is basically a simplified find(1) command, similar to the nftw()
+ *       POSIX system call, but the latter does not handle depth (except via a
+ *       GNU extension).
+ * \todo This should be more efficient.
+ */
+static GList *
+find_matching_files(GList *files, const char *directory, int depth,
+                    const char *filename, const char *prefix,
+                    time_t from_mtime, time_t to_mtime, int max_files)
+{
+    DIR *dir = NULL;
+    struct dirent *dirent = NULL;
+
+    dir = opendir(directory);
+    if (dir == NULL) {
+        return files;
+    }
+    for (dirent = readdir(dir); dirent != NULL; dirent = readdir(dir)) {
+        struct stat fileinfo;
+        char *candidate_name = NULL;
+
+        candidate_name = crm_strdup_printf("%s/%s", directory, dirent->d_name);
+
+        if (stat(candidate_name, &fileinfo) != 0) {
+            // Skip this entry
+
+        } else if (is_set(fileinfo.st_mode, S_IFREG)
+            && ((filename == NULL) || (strcmp(dirent->d_name, filename) == 0))
+            && ((prefix == NULL) || pcmk__starts_with(dirent->d_name, prefix))
+            && ((from_mtime == 0) || (fileinfo.st_mtime > from_mtime))
+            && ((to_mtime == 0) || (fileinfo.st_mtime <= to_mtime))) {
+            files = g_list_prepend(files, candidate_name);
+            if (--max_files <= 0) {
+                break;
+            }
+
+        } else if (is_set(fileinfo.st_mode, S_IFDIR) && (depth > 0)) {
+            files = find_matching_files(files, candidate_name, depth - 1,
+                                        filename, prefix, from_mtime, to_mtime,
+                                        max_files);
+        }
+        free(candidate_name);
+    }
+    closedir(dir);
+    return files;
+}
+
+static char *
+find_cluster_cf(void)
+{
+    char *cf = NULL;
+
+    switch (options.cluster_type) {
+        case cluster_any:
+            break;
+
+        case cluster_corosync:
+            if (file_exists(PCMK__COROSYNC_CONF)) {
+                cf = strdup(PCMK__COROSYNC_CONF);
+            } else {
+                GList *cf_files = NULL;
+
+                cf = NULL;
+                debug("Looking for corosync configuration file "
+                      "(this may take a while) ...");
+                cf_files = find_matching_files(NULL, "/", options.depth,
+                                               "corosync.conf", NULL, 0, 0, 1);
+                if (cf_files != NULL) {
+                    cf = (char *) cf_files->data;
+                    g_list_free(cf_files);
+                }
+            }
+            break;
+    }
+    if (cf != NULL) {
+        debug("Located %s configuration file: %s",
+              cluster2str(options.cluster_type), cf);
+    }
+    return cf;
+}
+
 static void
 collect_locally(time_t start, time_t end)
 {
+    char *cluster_cf = NULL;
+
     debug("Collect locally on %s to %s", shorthost, report_home);
     create_report_subdir();
 
     // Reset report location to local collector
     set_report(false);
 
+    cluster_cf = find_cluster_cf();
+    if ((cluster_cf == NULL) && (options.cluster_type != cluster_any)) {
+        /* If cluster stack is still "any", this might be a Pacemaker Remote
+         * node, so don't complain in that case.
+         */
+        warning("Could not determine the location of %s configuration",
+                cluster2str(options.cluster_type));
+    }
+
     // @WIP do equivalent of remaining report.collector
+
+    free(cluster_cf);
 }
 
 static void
@@ -2107,42 +2215,6 @@ getcfvar() {
 		NF==2 && match($1,varname":$")==1 { print $2; exit; }
 		'
 	;;
-    esac
-}
-
-find_cluster_cf() {
-    case $1 in
-	corosync)
-	    best_size=0
-	    best_file=""
-
-	    # TODO: Technically these could be anywhere :-/
-	    for cf in "@PCMK__COROSYNC_CONF@"; do
-		if [ -f $cf ]; then
-		    size=`wc -l $cf | awk '{print $1}'`
-		    if [ $size -gt $best_size ]; then
-			best_size=$size
-			best_file=$cf
-		    fi
-		fi
-	    done
-	    if [ -z "$best_file" ]; then
-		debug "Looking for corosync configuration file. This may take a while..."
-		for f in `find / -maxdepth $options.depth -type f -name corosync.conf`; do
-		    best_file=$f
-		    break
-		done
-	    fi
-	    debug "Located corosync config file: $best_file"
-	    echo "$best_file"
-	    ;;
-	cluster_any)
-	    # Cluster type is undetermined. Don't complain, because this
-	    # might be a Pacemaker Remote node.
-	    ;;
-	*)
-	    warning "Unknown cluster type: $1"
-	    ;;
     esac
 }
 
@@ -2879,17 +2951,6 @@ collect_logs() {
     rm -f $cl_pattfile
     trap "" 0
 }
-
-if options.cluster_type == cluster_any
-    options.cluster_type=`detect_cluster_type`;;
-
-cluster_cf=`find_cluster_cf $options.cluster_type`
-
-# If cluster stack is still "any", this might be a Pacemaker Remote node,
-# so don't complain in that case.
-if [ -z "$cluster_cf" ] && [ $options.cluster_type != "cluster_any" ]; then
-   warning "Could not determine the location of your cluster configuration"
-fi
 
 if [ "(options.no_search? 0 : 1) = "1" ]; then
     logfiles=$(get_logfiles "$options.cluster_type" "$cluster_cf" | sort -u)
