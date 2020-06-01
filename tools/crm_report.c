@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <unistd.h>
 #include <ctype.h>
 #include <time.h>
 #include <dirent.h>
@@ -48,6 +49,7 @@ static FILE *report_file = NULL;
 
 static crm_exit_t finish(crm_exit_t exit_code);
 static void time2str(char *s, size_t n, const char *fmt, time_t t);
+static void collect_locally(time_t start, time_t end);
 
 /*
  * Command-line option parsing
@@ -74,6 +76,17 @@ static void time2str(char *s, size_t n, const char *fmt, time_t t);
 #define DEFAULT_REMOTE_SHELL        "ssh -T"
 #define DEFAULT_MAX_DEPTH           5
 #define DEFAULT_MAX_DEPTH_S         "5"
+
+/* Define a protocol number that represents the command-line option syntax
+ * needed when collecting remote information.
+ *
+ * crm_report gathers information from the local node, and optionally from other
+ * cluster nodes as well. It collects information from other nodes by remotely
+ * executing crm_report with the --collect option. The protocol supported by the
+ * initiator is the first part of the option's argument, allowing the collecting
+ * node to adjust its behavior if needed.
+ */
+#define REPORT_PROTO    1
 
 // for multiple lines of help text
 #define HNL "\n                             "
@@ -109,6 +122,7 @@ static struct {
     gchar *user;
     gchar *shell;
     gchar *cts_log;
+    gchar *collect;
     gchar **logfile;
     gchar **analysis;
     gchar **sanitize;
@@ -336,6 +350,12 @@ build_arg_context(pcmk__common_args_t *args, GOptionGroup **group)
         {
             "sos-mode", 0, 0, G_OPTION_ARG_NONE, &(options.sos),
             "Use defaults suitable for being called by sosreport tool" HNL
+                "(behavior subject to change and not useful to end users)",
+            NULL,
+        },
+        {
+            "collect", 0, 0, G_OPTION_ARG_STRING, &(options.collect),
+            "Option used internally to collect reports from other nodes" HNL
                 "(behavior subject to change and not useful to end users)",
             NULL,
         },
@@ -813,6 +833,14 @@ first_command(const char *cmd, ...)
     return NULL;
 }
 
+static const char *
+find_basename(const char *path)
+{
+    char *slash = strrchr(path, '/');
+
+    return (slash? (slash + 1) : path);
+}
+
 static void
 time2str(char *s, size_t n, const char *fmt, time_t t)
 {
@@ -1217,6 +1245,205 @@ find_log_matching(const char *pattern)
 
 
 /*
+ * Data collection
+ */
+
+static void
+collect_locally(time_t start, time_t end)
+{
+    debug("Collect locally on %s to %s", shorthost, report_home);
+
+    // Reset report location to local collector
+    set_report(false);
+
+    // @WIP do equivalent of report.collector
+}
+
+static void
+collect_remotely(const char *node, const char *remote_base_dir,
+                 time_t start, time_t end)
+{
+    char from_str[1024] = { '\0', };
+    char to_str[1024] = { '\0', };
+    GString *call = NULL;
+    int i;
+
+    debug("Collect remotely on %s to %s", node, remote_base_dir);
+
+    // ISO 8601 representations
+    time2str(from_str, sizeof(from_str), "%FT%T", options.from_time);
+    time2str(to_str, sizeof(to_str), "%FT%T", options.to_time);
+
+    call = g_string_sized_new(128);
+    g_string_printf(call,
+                    "%s -l %s %s -- \"mkdir -p %s; crm_report"
+                    " --from-time %s --to-time %s --max-depth %d"
+                    " --dest '%s' --collect '%d:%s:'\"",
+                    options.shell, options.user, node, remote_base_dir,
+                    from_str, to_str, options.depth,
+                    remote_base_dir, REPORT_PROTO, host);
+    if (options.no_search) {
+        g_string_append(call, " --no-search");
+    }
+    if (options.cluster_type != cluster_any) {
+        g_string_append_printf(call, " --cluster %s",
+                               cluster2str(options.cluster_type));
+    }
+    if (options.sanitize != NULL) {
+        for (i = 0; options.sanitize[i] != NULL; ++i) {
+            g_string_append_printf(call, " --sanitize \"%s\"",
+                                   options.sanitize[i]);
+        }
+    }
+    if (options.analysis != NULL) {
+        for (i = 0; options.analysis[i] != NULL; ++i) {
+            g_string_append_printf(call, " --analysis \"%s\"",
+                                   options.analysis[i]);
+        }
+    }
+    if (options.logfile != NULL) {
+        for (i = 0; options.logfile[i] != NULL; ++i) {
+            g_string_append_printf(call, " --logfile \"%s\"",
+                                   options.logfile[i]);
+        }
+    }
+    for (int v = options.args->verbosity; v > 0; --v) {
+        g_string_append(call, " -V");
+    }
+    g_string_append_printf(call, " | cd %s && tar mxf -", report_home);
+
+    debug("Would have run: %s", call->str);
+    /* @WIP create a pipe and fork a child to do equivalent of call->str,
+     * using a main loop so we can put a short timeout on the child (otherwise
+     * if the other node is unavailable we would wait a very long time).
+     */
+    g_string_free(call, TRUE);
+}
+
+static void
+collect_data(time_t start, time_t end, const char *master_log)
+{
+    if (master_log != NULL) {
+        // @WIP dumplogset "$master_log" $start-10 $end+10 > "$report_home/$HALOG_F"
+    }
+
+    for (GList *item = options.nodes; item != NULL; item = item->next) {
+        const char *node = item->data;
+
+        /* @TODO If options.nodes has been auto-detected from the CIB, this (and
+         * similar comparisons elsewhere) will fail to properly detect the local
+         * node if its name in the cluster is not its long or short local
+         * hostname.
+         */
+        if (!strcasecmp(node, host) || !strcasecmp(node, shorthost)) {
+            collect_locally(start, end);
+        } else {
+            const char *remote_base_dir = find_basename(report_home);
+
+            collect_remotely(node, remote_base_dir, start - 10, end + 10);
+        }
+    }
+
+    /* @WIP
+    analyze $local_base_dir > $local_base_dir/$ANALYSIS_F
+    if [ -f $local_base_dir/$HALOG_F ]; then
+	node_events $local_base_dir/$HALOG_F > $local_base_dir/$EVENTS_F
+    fi
+
+    for node in $options.nodes; do
+	cat $local_base_dir/$node/$ANALYSIS_F >> $local_base_dir/$ANALYSIS_F
+	if [ -s $local_base_dir/$node/$EVENTS_F ]; then
+	    cat $local_base_dir/$node/$EVENTS_F >> $local_base_dir/$EVENTS_F
+	elif [ -s $local_base_dir/$HALOG_F ]; then
+	    awk "\$4==\"$options.nodes\"" $local_base_dir/$EVENTS_F >> $local_base_dir/$n/$EVENTS_F
+	fi
+    done
+    */
+
+    info(" ");
+    if (options.as_dir) {
+        info("Collected results are available in %s", report_home);
+    } else {
+        /* @WIP
+        fname=`shrink $local_base_dir`
+        rm -rf $local_base_dir
+        info("Collected results are available in $fname");
+        */
+        info(" ");
+        info("Please create a bug entry at");
+        info("    " PCMK__BUG_URL);
+        info("Include a description of your problem and attach this tarball");
+        info(" ");
+        info("Thank you for taking time to create this report.");
+    }
+    info(" ");
+}
+
+static const char *
+next_collect_param(char **collect)
+{
+    char *sep = strchr(*collect, ':');
+    const char *result = NULL;
+
+    if ((sep != NULL) && (sep != *collect)) {
+        result = *collect;
+        *sep = '\0';
+        *collect = sep + 1;
+    }
+    return result;
+}
+
+static crm_exit_t
+collect_for_initiator(void)
+{
+    char *collect = options.collect;
+    const char *protocol_s = NULL;
+    const char *report_initiator = NULL;
+    int protocol = 0;
+
+    /* This function should not call any messaging functions other than debug()
+     * or fatal() since the initiator is expecting stdout to be a tar archive.
+     */
+
+    if (options.from_time == 0) {
+        fatal("Start time not specified with collect command "
+              "(not intended to be run manually)");
+    }
+    if (options.to_time == 0) {
+        fatal("End time not specified with collect command "
+              "(not intended to be run manually)");
+    }
+    if (options.dest == NULL) {
+        fatal("Destination not specified with collect command "
+              "(not intended to be run manually)");
+    }
+
+    protocol_s = next_collect_param(&collect);
+    if (protocol_s == NULL) {
+        fatal("Protocol version not specified with collect command "
+              "(not intended to be run manually)");
+    }
+    if (sscanf(protocol_s, "%d", &protocol) != 1) {
+        fatal("Expected integer protocol version in collect command "
+              "(not intended to be run manually)");
+    }
+
+    report_initiator = next_collect_param(&collect);
+    if (report_initiator == NULL) {
+        fatal("Report initiator specified with collect command "
+              "(not intended to be run manually)");
+    }
+
+    create_report_home(NULL);
+
+    debug("Collecting from local host %s to %s for report initiator %s "
+          "(protocol %d)", host, options.dest, report_initiator, protocol);
+    collect_locally(options.from_time, options.to_time);
+    return CRM_EX_UNIMPLEMENT_FEATURE; // @WIP
+}
+
+
+/*
  * Cluster report
  */
 
@@ -1290,6 +1517,13 @@ cluster_report(void)
 {
     char *nodes = NULL;
     char *master_log = NULL;
+    time_t now = time(NULL);
+    char label[1024] = { '\0', };
+
+    time2str(label, sizeof(label), "pcmk-%a-%d-%b-%Y", now);
+    create_report_home(label);
+    set_report(true);
+    log_options();
 
     // If user didn't specify node(s), make a best guess
     if (options.nodes) {
@@ -1303,7 +1537,9 @@ cluster_report(void)
         info("Calculated node list: %s", nodes);
     }
 
-    if (g_list_find_custom(options.nodes, host, (GCompareFunc) strcasecmp)) {
+    if (g_list_find_custom(options.nodes, host, (GCompareFunc) strcasecmp)
+        || g_list_find_custom(options.nodes, shorthost,
+                              (GCompareFunc) strcasecmp)) {
         debug("We are a cluster node");
     } else {
         master_log = find_log_matching(".*(pacemaker-controld|CTS)");
@@ -1311,11 +1547,15 @@ cluster_report(void)
               (master_log? master_log : "none"));
     }
 
-    /*
-    label="pcmk-`date +"%a-%d-%b-%Y"`"
-    info "Collecting data from $options.nodes (`time2str $options.from_time` to `time2str $options.to_time`)"
-    collect_data $label $options.from_time $options.to_time $master_log
-    */
+    {
+        char from_str[1024] = { '\0', };
+        char to_str[1024] = { '\0', };
+
+        time2str(from_str, sizeof(from_str), "%x %X", options.from_time);
+        time2str(to_str, sizeof(to_str), "%x %X", options.to_time);
+        info("Collecting data from %s (%s to %s)", nodes, from_str, to_str);
+        collect_data(options.from_time, options.to_time, master_log);
+    }
     free(nodes);
     options.out->err(options.out, "Cluster report not implemented yet"); // @WIP
     return CRM_EX_UNIMPLEMENT_FEATURE;
@@ -1348,6 +1588,8 @@ cts_report(void)
 	    label="CTS-$start_test-$end_test-`date +"%b-%d-%Y"`"
 	    end_test=`expr $end_test + 1`
 	fi
+    create_report_home(label);
+    set_report(true);
 
 	if [ $start_test = 0 ]; then
 	    start_pat="BEGINNING [0-9].* TESTS"
@@ -1387,7 +1629,7 @@ cts_report(void)
 
 	if [ $start_time != 0 ];then
 	    info "$msg (`time2str $start_time` to `time2str $end_time`)"
-	    collect_data $label $start_time $end_time $options.cts_log
+	    collect_data $start_time $end_time $options.cts_log
 	else
 	    fatal "$msg failed: not found"
 	fi
@@ -1420,6 +1662,7 @@ finish(crm_exit_t exit_code)
     g_free(options.user);
     g_free(options.shell);
     g_free(options.cts_log);
+    g_free(options.collect);
     g_strfreev(options.logfile);
     g_strfreev(options.analysis);
     g_strfreev(options.sanitize);
@@ -1461,13 +1704,8 @@ main(int argc, char **argv)
         options.nodes = g_list_prepend(NULL, strdup(host));
     }
 
-    // @WIP For now, define a log file for testing
-    create_report_home("report-test");
-    set_report(true);
-    log_options();
-
     // Check early if tar is unavailable so we don't waste effort
-    if (!options.as_dir
+    if ((!options.as_dir || options.collect)
         && (first_command("tar", NULL) == NULL)) {
         fatal("Required program 'tar' not found, please install and re-run");
     }
@@ -1477,7 +1715,10 @@ main(int argc, char **argv)
         options.cluster_type = detect_cluster_type();
     }
 
-    if (options.cts != NULL) {
+    if (options.collect != NULL) {
+        exit_code = collect_for_initiator();
+
+    } else if (options.cts != NULL) {
         exit_code = cts_report();
 
     } else if (options.from_time > 0) {
@@ -2377,7 +2618,7 @@ get_readable_cib() {
 # circumstances
 sanitize_xml_attrs() {
     sed $(
-	for patt in $SANITIZE; do
+	for patt in $options.sanitize; do
 	    echo "-e /name=\"$patt\"/s/value=\"[^\"]*\"/value=\"****\"/"
 	done
     )
@@ -2400,7 +2641,7 @@ sanitize_one_clean() {
 sanitize() {
     file=$1
     compress=""
-    if [ -z "$SANITIZE" ]; then
+    if [ -z "$options.sanitize" ]; then
 	return
     fi
     echo $file | grep -qs 'gz$' && compress=gzip
@@ -2649,7 +2890,7 @@ drbd_info() {
 
     if which drbdadm >/dev/null 2>&1; then
         echo "--- drbdadm dump:"
-        if [ -z "$SANITIZE"]; then
+        if [ -z "$options.sanitize"]; then
             drbdadm dump 2>&1
         else
             drbdadm dump 2>&1 | sed "s/\(shared-secret[ 	]*\"\)[^\"]*\";/\1****\";/"
@@ -2727,7 +2968,7 @@ get_logfiles_cs() {
 
         find_syslog "$facility_cs.info"
     fi
-    if [ "$SOS_MODE" = "1" ]; then
+    if [ "$options.sos" = "1" ]; then
         return
     fi
 
@@ -2757,7 +2998,7 @@ get_logfiles() {
     if [ "$facility" != "$facility_cs" ]&&[ "$facility" != none ]; then
         find_syslog "$facility.notice"
     fi
-    if [ "$SOS_MODE" = "1" ]; then
+    if [ "$options.sos" = "1" ]; then
         return
     fi
 
@@ -2848,11 +3089,11 @@ collect_logs() {
 
     # Create a temporary file with patterns to grep for
     cl_pattfile=$(mktemp) || fatal "cannot create temporary files"
-    for cl_pattern in $LOG_PATTERNS; do
+    for cl_pattern in $options.analysis; do
         echo "$cl_pattern"
     done > $cl_pattfile
 
-    echo "Log pattern matches from $REPORT_TARGET:" > $ANALYSIS_F
+    echo "Log pattern matches from $host:" > $ANALYSIS_F
     if [ -n "$CL_LOGFILES" ]; then
         for cl_logfile in $CL_LOGFILES; do
             cl_extract="$(basename $cl_logfile).extract.txt"
@@ -2866,7 +3107,7 @@ collect_logs() {
                 continue
             fi
 
-            dumplogset "$cl_logfile" $LOG_START $LOG_END > "$cl_extract"
+            dumplogset "$cl_logfile" $options.from_time-10 $options.to_time+10 > "$cl_extract"
             sanitize "$cl_extract"
 
             grep -f "$cl_pattfile" "$cl_extract" >> $ANALYSIS_F
@@ -2883,21 +3124,17 @@ collect_logs() {
     trap "" 0
 }
 
-debug "Initializing $REPORT_TARGET subdir"
-if [ "$REPORT_MASTER" != "$REPORT_TARGET" ]; then
-  if [ -e $report_home/$REPORT_TARGET ]; then
-    warning "Directory $report_home/$REPORT_TARGET already exists, using /tmp/$$/$REPORT_TARGET instead"
+debug "Initializing $host subdir"
+if [ -e $report_home/$host ]; then
+    warning "Directory $report_home/$host already exists, using /tmp/$$/$host instead"
     report_home=/tmp/$$
-  fi
 fi
 
-mkdir -p $report_home/$REPORT_TARGET
-cd $report_home/$REPORT_TARGET
+mkdir -p $report_home/$host
+cd $report_home/$host
 
-case $CLUSTER in
-    cluster_any) options.cluster_type=`detect_cluster_type`;;
-    *) options.cluster_type=$CLUSTER;;
-esac
+if options.cluster_type == cluster_any
+    options.cluster_type=`detect_cluster_type`;;
 
 cluster_cf=`find_cluster_cf $options.cluster_type`
 
@@ -2907,10 +3144,10 @@ if [ -z "$cluster_cf" ] && [ $options.cluster_type != "cluster_any" ]; then
    warning "Could not determine the location of your cluster configuration"
 fi
 
-if [ "$SEARCH_LOGS" = "1" ]; then
+if [ "(options.no_search? 0 : 1) = "1" ]; then
     logfiles=$(get_logfiles "$options.cluster_type" "$cluster_cf" | sort -u)
 fi
-logfiles="$(trim "$logfiles $EXTRA_LOGS")"
+logfiles="$(trim "$logfiles $options.logfile")"
 
 if [ -z "$logfiles" ]; then
     which journalctl > /dev/null 2>&1
@@ -2926,11 +3163,11 @@ debug "Config: $options.cluster_type ($cluster_cf) $logfiles"
 
 sys_info $options.cluster_type $PACKAGES > $SYSINFO_F
 essential_files $options.cluster_type | check_perms  > $PERMISSIONS_F 2>&1
-getconfig $options.cluster_type "$report_home/$REPORT_TARGET" "$cluster_cf" "$CRM_CONFIG_DIR/$CIB_F" "/etc/drbd.conf" "/etc/drbd.d" "/etc/booth"
+getconfig $options.cluster_type "$report_home/$host" "$cluster_cf" "$CRM_CONFIG_DIR/$CIB_F" "/etc/drbd.conf" "/etc/drbd.d" "/etc/booth"
 
-getpeinputs    $LOG_START $LOG_END $report_home/$REPORT_TARGET
-getbacktraces  $LOG_START $LOG_END > $report_home/$REPORT_TARGET/$BT_F
-getblackboxes  $LOG_START $LOG_END $report_home/$REPORT_TARGET
+getpeinputs    $options.from_time-10 $options.to_time+10 $report_home/$host
+getbacktraces  $options.from_time-10 $options.to_time+10 > $report_home/$host/$BT_F
+getblackboxes  $options.from_time-10 $options.to_time+10 $report_home/$host
 
 case $options.cluster_type in
     corosync)
@@ -2948,15 +3185,15 @@ case $options.cluster_type in
 esac
 
 dc=`crm_mon -1 2>/dev/null | awk '/Current DC/ {print $3}'`
-if [ "$REPORT_TARGET" = "$dc" ]; then
-    echo "$REPORT_TARGET" > DC
+if [ "$host" = "$dc" ] || [ "$shorthost" = "$dc" ]; then
+    echo "$host" > DC
 fi
 
 dlm_dump  > $DLM_DUMP_F 2>&1
 sys_stats > $SYSSTATS_F 2>&1
 drbd_info > $DRBD_INFO_F 2>&1
 
-debug "Sanitizing files: $SANITIZE"
+debug "Sanitizing files: $options.sanitize"
 #
 # replace sensitive info with '****'
 #
@@ -2973,11 +3210,11 @@ done
 # For convenience, generate human-readable version of CIB and any XML errors
 # in it (AFTER sanitizing, so we don't need to sanitize this output).
 # sosreport does this itself, so we do not need to when run by sosreport.
-if [ "$SOS_MODE" != "1" ]; then
-    get_readable_cib "$report_home/$REPORT_TARGET"
+if [ "$options.sos" != "1" ]; then
+    get_readable_cib "$report_home/$host"
 fi
 
-collect_logs "$LOG_START" "$LOG_END" $logfiles
+collect_logs "$options.from_time-10" "$options.to_time+10" $logfiles
 
 # Purge files containing no information
 for f in `ls -1`; do
@@ -3005,91 +3242,16 @@ for l in $logfiles; do
 done
 
 if [ -e $report_home/.env ]; then
-    debug "Localhost: $REPORT_MASTER $REPORT_TARGET"
+    debug "Localhost: $host"
 
-elif [ "$REPORT_MASTER" != "$REPORT_TARGET" ]; then
-    debug "Streaming report back to $REPORT_MASTER"
-    (cd $report_home && tar cf - $REPORT_TARGET)
-    if [ "$REMOVE" = "1" ]; then
+elif [ $options.collect ]; then
+    debug "Streaming report back to report initiator"
+    (cd $report_home && tar cf - $host)
 	cd
 	rm -rf $report_home
-    fi
 fi
 
 ## crm_report.in
-
-collect_data() {
-    label="$1"
-    start=`expr $2 - 10`
-    end=`expr $3 + 10`
-    masterlog=$4
-
-    create_report_home($label)
-    if [ "x$masterlog" != "x" ]; then
-	dumplogset "$masterlog" $start $end > "$report_home/$HALOG_F"
-    fi
-
-    for node in $options.nodes; do
-	cat <<EOF >$report_home/.env
-LABEL="$label"
-report_home="$r_base"
-REPORT_MASTER="$host"
-REPORT_TARGET="$node"
-LOG_START=$start
-LOG_END=$end
-REMOVE=1
-SANITIZE="$options.sanitize"
-CLUSTER=$options.cluster_type
-LOG_PATTERNS="$options.analysis"
-EXTRA_LOGS="$options.logfile"
-SEARCH_LOGS=($options.no_search? 0 : 1)
-SOS_MODE=$options.sos
-verbose=$options.args->verbosity
-maxdepth=$options.depth
-EOF
-
-	if [ $host = $node ]; then
-	    cat <<EOF >>$report_home/.env
-report_home="$report_home"
-EOF
-	    cat $report_home/.env $report_data/report.common $report_data/report.collector > $report_home/collector
-	    bash $report_home/collector
-	else
-	    cat $report_home/.env $report_data/report.common $report_data/report.collector \
-		| $options.shell -l $options.user $node -- "mkdir -p $r_base; cat > $r_base/collector; bash $r_base/collector" | (cd $report_home && tar mxf -)
-	fi
-    done
-
-    analyze $report_home > $report_home/$ANALYSIS_F
-    if [ -f $report_home/$HALOG_F ]; then
-	node_events $report_home/$HALOG_F > $report_home/$EVENTS_F
-    fi
-
-    for node in $options.nodes; do
-	cat $report_home/$node/$ANALYSIS_F >> $report_home/$ANALYSIS_F
-	if [ -s $report_home/$node/$EVENTS_F ]; then
-	    cat $report_home/$node/$EVENTS_F >> $report_home/$EVENTS_F
-	elif [ -s $report_home/$HALOG_F ]; then
-	    awk "\$4==\"$options.nodes\"" $report_home/$EVENTS_F >> $report_home/$n/$EVENTS_F
-	fi
-    done
-
-    info " "
-    if [ $options.as_dir -ne 1 ]; then
-	fname=`shrink $report_home`
-	rm -rf $report_home
-	info "Collected results are available in $fname"
-	info " "
-	info "Please create a bug entry at"
-	info "    @BUG_URL@"
-	info "Include a description of your problem and attach this tarball"
-	info " "
-	info "Thank you for taking time to create this report."
-    else
-	info "Collected results are available in $report_home"
-    fi
-    info " "
-}
 
 #
 # check if files have same content in the cluster
