@@ -1749,9 +1749,11 @@ static crm_exit_t
 collect_for_initiator(void)
 {
     char *collect = options.collect;
+    char *cmd = NULL;
     const char *protocol_s = NULL;
     const char *report_initiator = NULL;
     int protocol = 0;
+    int rc = 0;
 
     /* This function should not call any messaging functions other than debug()
      * or fatal() since the initiator is expecting stdout to be a tar archive.
@@ -1791,7 +1793,32 @@ collect_for_initiator(void)
     debug("Collecting from local host %s to %s for report initiator %s "
           "(protocol %d)", host, options.dest, report_initiator, protocol);
     collect_locally(options.from_time, options.to_time);
-    return CRM_EX_UNIMPLEMENT_FEATURE; // @WIP
+    if (chdir(report_home) < 0) {
+        debug("Could not change to report directory %s: %s",
+              report_home, strerror(errno));
+    } else {
+        debug("Streaming report back to report initiator");
+        cmd = crm_strdup_printf("tar cf - %s", host);
+        rc = system(cmd);
+        free(cmd);
+        if ((rc < 0) || !WIFEXITED(rc) || (WEXITSTATUS(rc) != 0)) {
+            debug("Could not create archive of report (exit status %d)", rc);
+        }
+    }
+
+    // Clean up after ourselves
+    if (chdir("/") < 0) {
+        debug("Could not change to root directory: %s", strerror(errno));
+    }
+    cmd = crm_strdup_printf("rm -rf %s", report_home);
+    rc = system(cmd);
+    free(cmd);
+    if ((rc < 0) || !WIFEXITED(rc) || (WEXITSTATUS(rc) != 0)) {
+        debug("Could not remove report directory %s (exit status %d)",
+              report_home, rc);
+    }
+
+    return CRM_EX_OK;
 }
 
 
@@ -3048,16 +3075,6 @@ for l in $logfiles; do
 	ln -s "$b" "$CLUSTER_LOGNAME"
     fi
 done
-
-if [ -e $report_home/.env ]; then
-    debug "Localhost: $host"
-
-elif [ $options.collect ]; then
-    debug "Streaming report back to report initiator"
-    (cd $report_home && tar cf - $host)
-	cd
-	rm -rf $report_home
-fi
 
 ## crm_report.in
 
