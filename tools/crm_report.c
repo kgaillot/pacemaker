@@ -49,6 +49,7 @@ static char *host = NULL;
 static char *shorthost = NULL;
 static char *report_home = NULL;
 static FILE *report_file = NULL;
+static GHashTable *daemon_envvars = NULL;
 
 static crm_exit_t finish(crm_exit_t exit_code);
 static void time2str(char *s, size_t n, const char *fmt, time_t t);
@@ -1444,6 +1445,188 @@ extract_from_logs(const char *log_basepath, time_t start, time_t end,
     fclose(fp_out);
 }
 
+// sorted and unique
+static GList *
+add_log(GList *logs, char *logname)
+{
+    GList *iter;
+
+    for (iter = logs; iter != NULL; iter = iter->next) {
+        const char *name = iter->data;
+        int cmp = strcmp(name, logname);
+
+        if (cmp == 0) {
+            return logs; // already in list, nothing to do
+        } else if (cmp < 0) {
+            break;
+        }
+    }
+    return g_list_insert_before(logs, iter, logname);
+}
+
+static GList *
+find_syslog(GList *logs, const char *facility, const char *priority)
+{
+    int rc = 0;
+    char *message = crm_strdup_printf("Mark:pcmk:%lld", (long long) time(NULL));
+    char *command = crm_strdup_printf("logger -p %s.%s \"%s\" "
+                                      ">/dev/null 2>/dev/null",
+                                      facility, priority, message);
+
+    rc = system(command);
+    free(command);
+    if ((rc >= 0) && WIFEXITED(rc) && (WEXITSTATUS(rc) == 0)) {
+        char *log = NULL;
+
+        // Force buffer flush (if rsyslogd is in use)
+        if (system("killall -HUP rsyslogd >/dev/null 2>&1"));
+
+        sleep(2); // Give syslog time to catch up in case it's busy
+
+        command = crm_strdup_printf(".*%s", message);
+        log = find_log_matching(command);
+        if (log != NULL) {
+            logs = add_log(logs, log);
+        }
+        free(command);
+    }
+    free(message);
+    return logs;
+}
+
+static GList *
+find_corosync_logs(const char *cluster_cf, char **facility)
+{
+    GList *logs = NULL;
+    FILE *fp = fopen(cluster_cf, "r");
+    char *syslog_priority = NULL;
+    char *logfile = NULL;
+    char line[1024];
+    char option[1024];
+    char value[1024];
+
+    // corosync.conf defaults
+    int to_syslog = 1;
+    int to_logfile = 0;
+
+    if (fp == NULL) {
+        return NULL;
+    }
+
+    /* We parse the configuration file ourselves rather than use the corosync
+     * CFG API, because we want to be able to collect logs even if the cluster
+     * is not running, and we don't want to link against the cluster libraries.
+     */
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        /* Ignore lines without options, and commented lines. (We cheat a little
+         * and don't care what top-level directive an option is in, we just look
+         * for option names we're interested in.)
+         */
+        if ((sscanf(line, " %[^:]: %s", option, value) == 2) && (*option != '#')) {
+            if (strcmp(option, "to_syslog") == 0) {
+                crm_str_to_boolean(value, &to_syslog);
+
+            } else if (strcmp(option, "to_logfile") == 0) {
+                crm_str_to_boolean(value, &to_logfile);
+
+            } else if (strcmp(option, "syslog_facility") == 0) {
+                if (*facility == NULL) {
+                    *facility = strdup(value);
+                }
+
+            } else if (strcmp(option, "syslog_priority") == 0) {
+                if (syslog_priority == NULL) {
+                    syslog_priority = strdup(value);
+                }
+
+            } else if (strcmp(option, "logfile") == 0) {
+                if (logfile == NULL) {
+                    logfile = strdup(value);
+                }
+            }
+        }
+
+        if (line[strlen(line) - 1] != '\n') {
+            ignore_rest_of_line(fp);
+        }
+    }
+    fclose(fp);
+
+    if (*facility == NULL) {
+        *facility = strdup("daemon");
+    }
+    if (syslog_priority == NULL) {
+        syslog_priority = strdup("info");
+    }
+    debug("Log settings from %s: %ssyslog %s.%s, logfile %s",
+          cluster_cf, (to_syslog? "" : "no "), *facility, syslog_priority,
+          (logfile? logfile : "none"));
+
+    if (to_syslog) {
+        logs = find_syslog(logs, *facility, syslog_priority);
+    } else {
+        free(*facility);
+        *facility = NULL;
+    }
+
+    if (!options.sos) { // sosreport will collect the corosync log on its own
+        if (to_logfile && file_exists(logfile)) {
+            logs = add_log(logs, logfile);
+        } else if (logfile != NULL) {
+            free(logfile);
+        }
+    }
+    return logs;
+}
+
+static GList *
+find_cluster_logs(const char *cluster_cf)
+{
+    GList *cluster_logs = NULL;
+    const char *detail_log = NULL;
+    char *cluster_facility = NULL;
+    const char *pcmk_facility = NULL;
+    const char *pcmk_priority = NULL;
+
+    switch (options.cluster_type) {
+        case cluster_corosync:
+            cluster_logs = find_corosync_logs(cluster_cf, &cluster_facility);
+            break;
+        default:
+            break;
+    }
+
+    // Grab logging variables used with pacemaker daemons
+    pcmk_facility = g_hash_table_lookup(daemon_envvars, "PCMK_logfacility");
+    if (pcmk_facility == NULL) {
+        pcmk_facility = "daemon";
+    }
+    pcmk_priority = g_hash_table_lookup(daemon_envvars, "PCMK_logpriority");
+    if (pcmk_priority == NULL) {
+        pcmk_priority = "notice";
+    }
+    detail_log = g_hash_table_lookup(daemon_envvars, "PCMK_logfile");
+    if (detail_log == NULL) {
+        detail_log = CRM_LOG_DIR "/pacemaker.log";
+    }
+    debug("Log settings from " PCMK_SYSCONF_FILE
+          ": syslog %s.%s, logfile %s",
+          pcmk_facility, pcmk_priority, detail_log);
+
+    if (safe_str_neq(pcmk_facility, cluster_facility)
+        && safe_str_neq(pcmk_facility, "none")) {
+        cluster_logs = find_syslog(cluster_logs, pcmk_facility, pcmk_priority);
+    }
+    free(cluster_facility);
+
+    // sosreport already collects pacemaker detail log so can skip in that case
+    if (!options.sos && file_exists(detail_log)) {
+        cluster_logs = add_log(cluster_logs, strdup(detail_log));
+    }
+    return cluster_logs;
+}
+
+
 /*
  * Data collection
  */
@@ -1586,6 +1769,7 @@ static void
 collect_locally(time_t start, time_t end)
 {
     char *cluster_cf = NULL;
+    GList *found_logs = NULL;
 
     debug("Collect locally on %s to %s", shorthost, report_home);
     create_report_subdir();
@@ -1602,8 +1786,31 @@ collect_locally(time_t start, time_t end)
                 cluster2str(options.cluster_type));
     }
 
+    if (!options.no_search) {
+        found_logs = find_cluster_logs(cluster_cf);
+    }
+    if (options.logfile != NULL) {
+        for (int i = 0; options.logfile[i] != NULL; ++i) {
+            found_logs = add_log(found_logs, strdup(options.logfile[i]));
+        }
+    }
+    if (found_logs == NULL) {
+        info("No log files found or specified with --logfile /some/path");
+        if (first_command("journalctl") == NULL) {
+            info("No logs will be collected");
+        } else {
+            info("Systemd journal will be only log collected");
+        }
+    } else {
+        debug("Logs that will be collected:");
+        for (GList *iter = found_logs; iter != NULL; iter = iter->next) {
+            debug("\t%s", (char *) (iter->data));
+        }
+    }
+
     // @WIP do equivalent of remaining report.collector
 
+    g_list_free_full(found_logs, free);
     free(cluster_cf);
 }
 
@@ -2051,6 +2258,7 @@ finish(crm_exit_t exit_code)
     free(host);
     free(shorthost);
     free(report_home);
+    g_hash_table_destroy(daemon_envvars);
 
     return exit_code;
 }
@@ -2059,6 +2267,12 @@ int
 main(int argc, char **argv)
 {
     crm_exit_t exit_code = CRM_EX_OK;
+
+    /* We need to know what syslog settings the pacemaker daemons use, but
+     * crm_log_cli_init() below will set the facility to "none", so check now.
+     */
+    daemon_envvars = crm_str_table_new();
+    pcmk__load_env_options(PCMK_SYSCONF_FILE, daemon_envvars);
 
     crm_log_cli_init("crm_report");
     parse_args(argc, argv);
@@ -2208,41 +2422,6 @@ shrink() {
     cd $olddir  >/dev/null 2>&1
 
     echo $target
-}
-
-# cut out a stanza
-getstanza() {
-	awk -v name="$1" '
-	!in_stanza && NF==2 && /^[a-z][a-z]*[[:space:]]*{/ { # stanza start
-		if ($1 == name)
-			in_stanza = 1
-	}
-	in_stanza { print }
-	in_stanza && NF==1 && $1 == "}" { exit }
-	'
-}
-# supply stanza in $1 and variable name in $2
-# (stanza is optional)
-getcfvar() {
-    cf_type=$1; shift;
-    cf_var=$1; shift;
-    cf_file=$*
-
-    [ -f "$cf_file" ] || return
-    case $cf_type in
-	corosync)
-	    sed 's@#.*@@' < $cf_file |
-	        if [ $# -eq 2 ]; then
-			getstanza "$cf_var"
-			shift 1
-		else
-			cat
-		fi |
-		awk -v varname="$cf_var" '
-		NF==2 && match($1,varname":$")==1 { print $2; exit; }
-		'
-	;;
-    esac
 }
 
 # Override any locale settings so collected output is in a common language
@@ -2781,117 +2960,6 @@ drbd_info() {
     fi
 }
 
-iscfvarset() {
-    test "`getcfvar $1 $2`"
-}
-
-iscfvartrue() {
-    getcfvar $1 $2 $3 | grep -E -qsi "^(true|y|yes|on|1)"
-}
-
-iscfvarfalse() {
-    getcfvar $1 $2 $3 | grep -E -qsi "^(false|n|no|off|0)"
-}
-
-find_syslog() {
-    priority="$1"
-
-    # Always include system logs (if we can find them)
-    msg="Mark:pcmk:`perl -e 'print time()'`"
-    logger -p "$priority" "$msg" >/dev/null 2>&1
-
-    # Force buffer flush
-    killall -HUP rsyslogd >/dev/null 2>&1
-
-    sleep 2 # Give syslog time to catch up in case it's busy
-    find_log_matching ".*$msg"
-}
-
-get_logfiles_cs() {
-    if [ ! -f "$cf_file" ]; then
-        return
-    fi
-
-    debug "Reading $cf_type log settings from $cf_file"
-
-    # The default value of to_syslog is yes.
-    if ! iscfvarfalse $cf_type to_syslog "$cf_file"; then
-        facility_cs=$(getcfvar $cf_type syslog_facility "$cf_file")
-        if [ -z "$facility_cs" ]; then
-            facility_cs="daemon"
-        fi
-
-        find_syslog "$facility_cs.info"
-    fi
-    if [ "$options.sos" = "1" ]; then
-        return
-    fi
-
-    if iscfvartrue $cf_type to_logfile "$cf_file"; then
-        logfile=$(getcfvar $cf_type logfile "$cf_file")
-        if [ -f "$logfile" ]; then
-            debug "Log settings found for cluster type $cf_type: $logfile"
-            echo "$logfile"
-        fi
-    fi
-}
-
-get_logfiles() {
-    cf_type=$1
-    cf_file="$2"
-
-    case $cf_type in
-        corosync) get_logfiles_cs;;
-    esac
-
-    . @CONFIGDIR@/pacemaker
-
-    facility="$PCMK_logfacility"
-    if [ -z "$facility" ]; then
-        facility="daemon"
-    fi
-    if [ "$facility" != "$facility_cs" ]&&[ "$facility" != none ]; then
-        find_syslog "$facility.notice"
-    fi
-    if [ "$options.sos" = "1" ]; then
-        return
-    fi
-
-    logfile="$PCMK_logfile"
-    if [ "$logfile" != none ]; then
-        if [ -z "$logfile" ]; then
-            for logfile in "@CRM_LOG_DIR@/pacemaker.log" "/var/log/pacemaker.log"; do
-                if [ -f "$logfile" ]; then
-                    debug "Log settings not found for Pacemaker, assuming $logfile"
-                    echo "$logfile"
-                    break
-                fi
-            done
-
-        elif [ -f "$logfile" ]; then
-            debug "Log settings found for Pacemaker: $logfile"
-            echo "$logfile"
-        fi
-    fi
-
-    # Look for detail logs:
-
-    # - initial pacemakerd logs and tracing might go to a different file
-    pattern="Starting Pacemaker"
-
-    # - make sure we get something from the scheduler
-    pattern="$pattern\\|Calculated transition"
-
-    # - cib and pacemaker-execd updates
-    # (helpful on non-DC nodes and when cluster has been up for a long time)
-    pattern="$pattern\\|cib_perform_op\\|process_lrm_event"
-
-    # - pacemaker_remote might use a different file
-    pattern="$pattern\\|pacemaker[-_]remoted:"
-
-    find_logs_matching ".*$pattern" 3
-}
-
 essential_files() {
 	cat<<EOF
 d $PCMK_SCHEDULER_INPUT_DIR 0750 hacluster haclient
@@ -2978,23 +3046,6 @@ collect_logs() {
     rm -f $cl_pattfile
     trap "" 0
 }
-
-if [ "(options.no_search? 0 : 1) = "1" ]; then
-    logfiles=$(get_logfiles "$options.cluster_type" "$cluster_cf" | sort -u)
-fi
-logfiles="$(trim "$logfiles $options.logfile")"
-
-if [ -z "$logfiles" ]; then
-    which journalctl > /dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        info "Systemd journal will be only log collected"
-    else
-        info "No logs will be collected"
-    fi
-    info "No log files found or specified with --logfile /some/path"
-fi
-
-debug "Config: $options.cluster_type ($cluster_cf) $logfiles"
 
 sys_info $options.cluster_type $PACKAGES > $SYSINFO_F
 essential_files $options.cluster_type | check_perms  > $PERMISSIONS_F 2>&1
