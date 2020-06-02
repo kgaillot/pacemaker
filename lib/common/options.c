@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 
@@ -1186,6 +1187,150 @@ pcmk__env_option_enabled(const char *daemon, const char *option)
     return (value != NULL)
         && (crm_is_true(value)
             || ((daemon != NULL) && (strstr(value, daemon) != NULL)));
+}
+
+/*!
+ * \internal
+ * \brief Check a line of text for a valid environment variable name
+ *
+ * \param[in]  line  Text to check
+ * \param[out] first  First character of valid name if found, NULL otherwise
+ * \param[out] last   Last character of valid name if found, NULL otherwise
+ *
+ * \return TRUE if valid name found, FALSE otherwise
+ * \note It's reasonable to impose limitations on environment variable names
+ *       beyond what C or setenv() does: We only allow names that contain only
+ *       [a-zA-Z0-9_] characters and do not start with a digit.
+ */
+static bool
+find_env_var_name(char *line, char **first, char **last)
+{
+    // Skip leading whitespace
+    *first = line;
+    while (isspace(**first)) {
+        ++*first;
+    }
+
+    if (isalpha(**first) || (**first == '_')) { // Valid first character
+        *last = *first;
+        while (isalnum(*(*last + 1)) || (*(*last + 1) == '_')) {
+            ++*last;
+        }
+        return TRUE;
+    }
+
+    *first = *last = NULL;
+    return FALSE;
+}
+
+/*!
+ * \internal
+ * \brief Parse NAME=VALUE pairs from a shell-script-like file into environment
+ *
+ * \param[in] filename  File containing environment variable definitions
+ * \param[in] vars      If not NULL, load variables into this table,
+ *                      otherwise load variables into the local environment
+ *
+ * \note This function can be called by pacemaker-remoted before it has forked
+ *       or initialized logging yet, so don't leave any file descriptors open,
+ *       and don't log -- silently ignore errors.
+ */
+void
+pcmk__load_env_options(const char *filename, GHashTable *vars)
+{
+    FILE *fp = fopen(filename, "r");
+
+    if (fp != NULL) {
+        char line[LINE_MAX] = { '\0', };
+
+        while (fgets(line, LINE_MAX, fp) != NULL) {
+            char *name = NULL;
+            char *end = NULL;
+            char *value = NULL;
+            char *quote = NULL;
+
+            // Look for valid name immediately followed by equals sign
+            if (find_env_var_name(line, &name, &end) && (*++end == '=')) {
+
+                // Null-terminate name, and advance beyond equals sign
+                *end++ = '\0';
+
+                // Check whether value is quoted
+                if ((*end == '\'') || (*end == '"')) {
+                    quote = end++;
+                }
+                value = end;
+
+                if (quote) {
+                    /* Value is remaining characters up to next non-backslashed
+                     * matching quote character.
+                     */
+                    while (((*end != *quote) || (*(end - 1) == '\\'))
+                           && (*end != '\0')) {
+                        end++;
+                    }
+                    if (*end == *quote) {
+                        // Null-terminate value, and advance beyond close quote
+                        *end++ = '\0';
+                    } else {
+                        // Matching closing quote wasn't found
+                        value = NULL;
+                    }
+
+                } else {
+                    /* Value is remaining characters up to next non-backslashed
+                     * whitespace.
+                     */
+                    while ((!isspace(*end) || (*(end - 1) == '\\'))
+                           && (*end != '\0')) {
+                        ++end;
+                    }
+
+                    if (end == (line + LINE_MAX - 1)) {
+                        // Line was too long
+                        value = NULL;
+                    }
+                    // Do NOT null-terminate value (yet)
+                }
+
+                /* We have a valid name and value, and end is now the character
+                 * after the closing quote or the first whitespace after the
+                 * unquoted value. Make sure the rest of the line is just
+                 * whitespace or a comment.
+                 */
+                if (value) {
+                    char *value_end = end;
+
+                    while (isspace(*end) && (*end != '\n')) {
+                        ++end;
+                    }
+                    if ((*end == '\n') || (*end == '#')) {
+                        if (quote == NULL) {
+                            // Now we can null-terminate an unquoted value
+                            *value_end = '\0';
+                        }
+                        if (vars == NULL) {
+                            setenv(name, value, 0);
+                        } else {
+                            g_hash_table_insert(vars, strdup(name),
+                                                strdup(value));
+                        }
+
+                    } else {
+                        value = NULL;
+                    }
+                }
+            }
+
+            if ((value == NULL) && (strchr(line, '\n') == NULL)) {
+                // Eat remainder of line beyond LINE_MAX
+                if (fscanf(fp, "%*[^\n]\n") == EOF) {
+                    value = NULL; // Don't care, make compiler happy
+                }
+            }
+        }
+        fclose(fp);
+    }
 }
 
 
