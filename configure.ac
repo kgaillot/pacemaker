@@ -745,6 +745,7 @@ AC_SUBST(docdir)
 
 expand_path_option CONFIGDIR "${sysconfdir}/sysconfig"
 AC_SUBST(CONFIGDIR)
+AC_DEFINE_UNQUOTED(PCMK_SYSCONF_FILE,"$CONFIGDIR/pacemaker", Location for Pacemaker environment variables)
 
 expand_path_option PCMK__COROSYNC_CONF "${sysconfdir}/corosync/corosync.conf"
 AC_SUBST(PCMK__COROSYNC_CONF)
