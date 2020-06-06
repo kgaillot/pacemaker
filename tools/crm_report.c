@@ -42,8 +42,66 @@ static const char *syslog_dirs[] = {
     NULL,
 };
 
+/* Superset of all packages of interest on all distros (the appropriate package
+ * manager will be used to check and validate the installation of any of these
+ * packages)
+ */
+static const char *packages[] = {
+    "pacemaker",
+    "pacemaker-libs",
+    "pacemaker-cluster-libs",
+    "libpacemaker3",
+    "pacemaker-remote",
+    "pacemaker-pygui",
+    "pacemaker-pymgmt",
+    "pymgmt-client",
+    "corosync",
+    "corosynclib",
+    "libcorosync4",
+    "resource-agents",
+    "cluster-glue-libs",
+    "cluster-glue",
+    "libglue2",
+    "ldirectord",
+    "ocfs2-tools",
+    "ocfs2-tools-o2cb",
+    "ocfs2console",
+    "ocfs2-kmp-default",
+    "ocfs2-kmp-pae",
+    "ocfs2-kmp-xen",
+    "ocfs2-kmp-debug",
+    "ocfs2-kmp-trace",
+    "drbd",
+    "drbd-kmp-xen",
+    "drbd-kmp-pae",
+    "drbd-kmp-default",
+    "drbd-kmp-debug",
+    "drbd-kmp-trace",
+    "drbd-pacemaker",
+    "drbd-utils",
+    "drbd-bash-completion",
+    "drbd-xen",
+    "lvm2",
+    "lvm2-clvm",
+    "cmirrord",
+    "libdlm",
+    "libdlm2",
+    "libdlm3",
+    "hawk",
+    "ruby",
+    "lighttpd",
+    "kernel-default",
+    "kernel-pae",
+    "kernel-xen",
+    "glibc",
+    NULL
+};
+
 // Log entries of interest on each node will be extracted into this file
 #define CLUSTER_LOGNAME "cluster-log.txt"
+
+// Basic system information will be saved to this file
+#define SYSINFO_FILENAME    "sysinfo.txt"
 
 static char *host = NULL;
 static char *shorthost = NULL;
@@ -887,6 +945,32 @@ list2str(GList *list)
         list = list->next;
     }
     return str;
+}
+
+static void
+pipe_output_to(FILE *fp, const char *prefix, const char *cmd, int maxlines)
+{
+    FILE *pipe = popen(cmd, "r");
+    char line[1024];
+    int nlines = 0;
+
+    if (pipe == NULL) {
+        return;
+    }
+    if (prefix != NULL) {
+        fputs(prefix, fp);
+    }
+    while (fgets(line, sizeof(line), pipe) != NULL) {
+        fputs(line, fp);
+        if ((maxlines > 0) && (++nlines >= maxlines)) {
+            break;
+        }
+        if (line[strlen(line) - 1] != '\n') {
+            ignore_rest_of_line(pipe);
+            putc('\n', fp);
+        }
+    }
+    pclose(pipe);
 }
 
 
@@ -1766,6 +1850,134 @@ find_cluster_cf(void)
 }
 
 static void
+collect_package_list_deb(FILE *fp)
+{
+    fprintf(fp, "The package manager is: deb\n");
+    fprintf(fp, "Installed packages:\n");
+    pipe_output_to(fp, NULL,
+                   "dpkg-query -f '${Package} ${Version} ${Architecture}\n' -W"
+                   " | sort 2>&1", 0);
+    fprintf(fp, "\n");
+    for (int i = 0; packages[i] != NULL; ++i) {
+        char *cmd = crm_strdup_printf("dpkg-query -W %s 2>/dev/null",
+                                      packages[i]);
+        int rc = system(cmd);
+
+        free(cmd);
+        if ((rc >= 0) && WIFEXITED(rc) && (WEXITSTATUS(rc) == 0)) {
+            fprintf(fp, "Verifying installation of: %s\n", packages[i]);
+            cmd = crm_strdup_printf("debsums -s %s >> " SYSINFO_FILENAME
+                                    " 2>/dev/null", packages[i]);
+            pipe_output_to(fp, NULL, cmd, 0);
+            free(cmd);
+        }
+    }
+}
+
+static void
+collect_package_list_rpm(FILE *fp)
+{
+    fprintf(fp, "The package manager is: rpm\n");
+    fprintf(fp, "Installed packages:\n");
+    pipe_output_to(fp, NULL,
+                   "rpm -qa --qf '%{name} %{version}-%{release} - "
+                   "%{distribution} %{arch}\n' | sort 2>&1", 0);
+    fprintf(fp, "\n");
+    for (int i = 0; packages[i] != NULL; ++i) {
+        char *cmd = crm_strdup_printf("rpm -q %s >/dev/null 2>/dev/null",
+                                      packages[i]);
+        int rc = system(cmd);
+
+        free(cmd);
+        if ((rc >= 0) && WIFEXITED(rc) && (WEXITSTATUS(rc) == 0)) {
+            fprintf(fp, "Verifying installation of: %s\n", packages[i]);
+            pipe_output_to(fp, NULL, cmd, 0);
+        }
+    }
+}
+
+static void
+collect_package_list_pkg_info(FILE *fp)
+{
+    fprintf(fp, "The package manager is: pkg_info\n");
+    fprintf(fp, "Installed packages:\n");
+    pipe_output_to(fp, NULL, "pkg_info 2>&1", 1);
+}
+
+static void
+collect_package_list_pkginfo(FILE *fp)
+{
+    fprintf(fp, "The package manager is: pkginfo\n");
+    fprintf(fp, "Installed packages:\n");
+    pipe_output_to(fp, NULL, "pkginfo | awk '{print $3}' 2>&1", 1);
+}
+
+static void
+collect_package_list(FILE *fp)
+{
+    if (first_command("dpkg") != NULL) {
+        collect_package_list_deb(fp);
+
+    } else if (first_command("rpm") != NULL) {
+        collect_package_list_rpm(fp);
+
+    } else if (first_command("pkg_info") != NULL) {
+        collect_package_list_pkg_info(fp);
+
+    } else if (first_command("pkginfo") != NULL) {
+        collect_package_list_pkginfo(fp);
+
+    } else {
+        warning("Unknown package manager");
+    }
+}
+
+static void
+collect_versions(FILE *fp)
+{
+    fprintf(fp, "Pacemaker " PACEMAKER_VERSION
+            " (Build: " BUILD_VERSION "): " CRM_FEATURES "\n");
+
+    switch (options.cluster_type) {
+        case cluster_corosync:
+            pipe_output_to(fp, NULL, "corosync -v 2>&1", 1);
+            break;
+        default:
+            break;
+    }
+
+    // Cluster glue version hash (if available)
+    pipe_output_to(fp, NULL, "stonith -V 2>/dev/null", 1);
+
+    pipe_output_to(fp, "resource-agents: ",
+                   "grep 'Build version:' "
+                   "/usr/lib/ocf/resource.d/heartbeat/.ocf-shellfuncs "
+                   "2>/dev/null", 1);
+    fprintf(fp, "\n");
+}
+
+static void
+collect_system_info(void)
+{
+    FILE *fp = fopen(SYSINFO_FILENAME, "w");
+
+    if (fp == NULL) {
+        warning("Could not write to " SYSINFO_FILENAME);
+        return;
+    }
+    pipe_output_to(fp, "Platform: ", "uname 2>/dev/null", 0);
+    pipe_output_to(fp, "Kernel release: ", "uname -r 2>/dev/null", 0);
+    pipe_output_to(fp, "Architecture: ", "uname -m 2>/dev/null", 0);
+    if (first_command("distro") != NULL) {
+        pipe_output_to(fp, "Distribution: ", "distro 2>/dev/null", 0);
+    }
+    fprintf(fp, "\n");
+    collect_versions(fp);
+    collect_package_list(fp);
+    fclose(fp);
+}
+
+static void
 collect_locally(time_t start, time_t end)
 {
     char *cluster_cf = NULL;
@@ -1807,6 +2019,8 @@ collect_locally(time_t start, time_t end)
             debug("\t%s", (char *) (iter->data));
         }
     }
+
+    collect_system_info();
 
     // @WIP do equivalent of remaining report.collector
 
@@ -2330,7 +2544,6 @@ main(int argc, char **argv)
 EVENTS_F=events.txt
 ANALYSIS_F=analysis.txt
 BT_F=backtraces.txt
-SYSINFO_F=sysinfo.txt
 SYSSTATS_F=sysstats.txt
 DLM_DUMP_F=dlm_dump.txt
 CRM_MON_F=crm_mon.txt
@@ -2349,24 +2562,6 @@ pause		Process.pause.detected
 resources	(lrmd|pacemaker-execd).*rsc:(start|stop)
 stonith		te_fence_node|fenced.*(requests|(Succeeded|Failed).to.|result=)
 start_stop	shutdown.decision|Corosync.Cluster.Engine|corosync.*Initializing.transport|Executive.Service.RELEASE|crm_shutdown:.Requesting.shutdown|pcmk_shutdown:.Shutdown.complete
-"
-
-# superset of all packages of interest on all distros
-# (the package manager will be used to validate the installation
-# of any of these packages that are installed)
-PACKAGES="pacemaker pacemaker-libs pacemaker-cluster-libs libpacemaker3
-pacemaker-remote pacemaker-pygui pacemaker-pymgmt pymgmt-client
-corosync corosynclib libcorosync4
-resource-agents cluster-glue-libs cluster-glue libglue2 ldirectord
-ocfs2-tools ocfs2-tools-o2cb ocfs2console
-ocfs2-kmp-default ocfs2-kmp-pae ocfs2-kmp-xen ocfs2-kmp-debug ocfs2-kmp-trace
-drbd drbd-kmp-xen drbd-kmp-pae drbd-kmp-default drbd-kmp-debug drbd-kmp-trace
-drbd-pacemaker drbd-utils drbd-bash-completion drbd-xen
-lvm2 lvm2-clvm cmirrord
-libdlm libdlm2 libdlm3
-hawk ruby lighttpd
-kernel-default kernel-pae kernel-xen
-glibc
 "
 
 linetime() {
@@ -2734,55 +2929,6 @@ distro() {
     warning "No lsb_release, no /etc/ *-release, no /etc/debian_version: no distro information"
 }
 
-pkg_ver() {
-    if which dpkg >/dev/null 2>&1 ; then
-	pkg_mgr="deb"
-    elif which rpm >/dev/null 2>&1 ; then
-	pkg_mgr="rpm"
-    elif which pkg_info >/dev/null 2>&1 ; then
-	pkg_mgr="pkg_info"
-    elif which pkginfo >/dev/null 2>&1 ; then
-	pkg_mgr="pkginfo"
-    else
-	warning "Unknown package manager"
-	return
-    fi
-    debug "The package manager is: $pkg_mgr"
-    echo "The package manager is: $pkg_mgr"
-
-    echo "Installed packages:"
-    case $pkg_mgr in
-	deb)
-	    dpkg-query -f '${Package} ${Version} ${Architecture}\n' -W | sort
-            echo
-	    for pkg in $*; do
-		if dpkg-query -W $pkg 2>/dev/null ; then
-		    debug "Verifying installation of: $pkg"
-		    echo "Verifying installation of: $pkg"
-		    debsums -s $pkg 2>/dev/null
-		fi
-	    done
-	    ;;
-	rpm)
-	    rpm -qa --qf '%{name} %{version}-%{release} - %{distribution} %{arch}\n' | sort
-            echo
-	    for pkg in $*; do
-		if rpm -q $pkg >/dev/null 2>&1 ; then
-		    debug "Verifying installation of: $pkg"
-		    echo "Verifying installation of: $pkg"
-		    rpm --verify $pkg 2>&1
-		fi
-	    done
-	    ;;
-	pkg_info)
-	    pkg_info
-	    ;;
-	pkginfo)
-	    pkginfo | awk '{print $3}'  # format?
-	    ;;
-    esac
-}
-
 getbacktraces() {
     debug "Looking for backtraces: $*"
     flist=$(
@@ -2832,37 +2978,6 @@ getblackboxes() {
 	qb-blackbox $bb > $3/${bb_short}.blackbox 2>&1
 	info "Extracting contents of blackbox: $bb_short"
     done
-}
-
-#
-# some basic system info and stats
-#
-sys_info() {
-    cluster=$1; shift
-    echo "Platform: `uname`"
-    echo "Kernel release: `uname -r`"
-    echo "Architecture: `uname -m`"
-    if [ `uname` = Linux ]; then
-	echo "Distribution: `distro`"
-    fi
-
-    echo
-    cibadmin --version 2>&1 | head -1
-    cibadmin -! 2>&1
-    case $cluster in
-	corosync)
-	    /usr/sbin/corosync -v 2>&1 | head -1
-	    ;;
-    esac
-
-    # Cluster glue version hash (if available)
-    stonith -V 2>/dev/null
-
-    # Resource agents version hash
-    echo "resource-agents: `grep 'Build version:' /usr/lib/ocf/resource.d/heartbeat/.ocf-shellfuncs`"
-
-    echo
-    pkg_ver $*
 }
 
 sys_stats() {
@@ -3047,7 +3162,6 @@ collect_logs() {
     trap "" 0
 }
 
-sys_info $options.cluster_type $PACKAGES > $SYSINFO_F
 essential_files $options.cluster_type | check_perms  > $PERMISSIONS_F 2>&1
 getconfig $options.cluster_type "$report_home/$host" "$cluster_cf" "$CRM_CONFIG_DIR/$CIB_F" "/etc/drbd.conf" "/etc/drbd.d" "/etc/booth"
 
@@ -3199,7 +3313,7 @@ analyze_one() {
 }
 
 analyze() {
-    flist="$MEMBERSHIP_F $CIB_F $CRM_MON_F $SYSINFO_F"
+    flist="$MEMBERSHIP_F $CIB_F $CRM_MON_F $SYSINFO_FILENAME"
     for f in $flist; do
 	printf "Diff $f... "
 	ls $1/ * /$f >/dev/null 2>&1 || {
