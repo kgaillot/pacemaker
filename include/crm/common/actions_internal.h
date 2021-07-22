@@ -138,6 +138,8 @@ enum pcmk__action_flags {
     // Whether operation-specific instance attributes have been unpacked yet
     pcmk__action_attrs_evaluated        = (UINT32_C(1) << 4),
 
+    pe_order_managed_then          = (UINT32_C(1) << 5), // @WIP
+
     // Whether action is allowed to be part of a live migration
     pcmk__action_migratable             = (UINT32_C(1) << 7),
 
