@@ -1,0 +1,127 @@
+<cib crm_feature_set="3.11.0" validate-with="pacemaker-3.7" epoch="88" num_updates="12" admin_epoch="0" cib-last-written="Fri Aug 20 16:32:56 2021" update-origin="rhel9-2" update-client="crmd" update-user="hacluster" have-quorum="1" dc-uuid="2" execution-date="1629495178">
+  <!-- The essential elements of this test are:
+       * There is an ordered, globally-unique clone (rsc1-clone) with 3 instances
+       * Two of the clone's instances are multiply active (on 2 nodes each)
+
+       In this situation, all of the multiply active clone instances should
+       stop sequentially, then the two instances should be started.
+    -->
+  <configuration>
+    <crm_config>
+      <cluster_property_set id="cib-bootstrap-options">
+        <nvpair id="cib-bootstrap-options-have-watchdog" name="have-watchdog" value="false"/>
+        <nvpair id="cib-bootstrap-options-dc-version" name="dc-version" value="2.1.0-11.el9-7c3f660707"/>
+        <nvpair id="cib-bootstrap-options-cluster-infrastructure" name="cluster-infrastructure" value="corosync"/>
+        <nvpair id="cib-bootstrap-options-cluster-name" name="cluster-name" value="rhel9-lab"/>
+        <nvpair id="cib-bootstrap-options-last-lrm-refresh" name="last-lrm-refresh" value="1629495176"/>
+      </cluster_property_set>
+    </crm_config>
+    <nodes>
+      <node id="1" uname="rhel9-1"/>
+      <node id="2" uname="rhel9-2">
+        <instance_attributes id="nodes-2">
+          <nvpair id="nodes-2-standby" name="standby" value="off"/>
+        </instance_attributes>
+      </node>
+    </nodes>
+    <resources>
+      <primitive id="Fencing" class="stonith" type="fence_xvm">
+        <meta_attributes id="Fencing-meta">
+          <nvpair id="Fencing-migration-threshold" name="migration-threshold" value="5"/>
+        </meta_attributes>
+        <instance_attributes id="Fencing-params">
+          <nvpair id="Fencing-pcmk_host_map" name="pcmk_host_map" value="remote-rhel9-1:rhel9-1;remote-rhel9-2:rhel9-2;"/>
+          <nvpair id="Fencing-key_file" name="key_file" value="/etc/pacemaker/fence_xvm.key"/>
+          <nvpair id="Fencing-multicast_address" name="multicast_address" value="239.255.100.100"/>
+          <nvpair id="Fencing-pcmk_host_list" name="pcmk_host_list" value="rhel9-1 remote-rhel9-1 rhel9-2 remote-rhel9-2"/>
+        </instance_attributes>
+        <operations>
+          <op id="Fencing-monitor-120s" name="monitor" interval="120s" timeout="120s"/>
+          <op id="Fencing-stop-0" name="stop" interval="0" timeout="60s"/>
+          <op id="Fencing-start-0" name="start" interval="0" timeout="60s"/>
+        </operations>
+      </primitive>
+      <clone id="rsc1-clone">
+        <primitive id="rsc1" class="ocf" type="Dummy" provider="pacemaker">
+          <operations>
+            <op name="migrate_from" timeout="20s" interval="0s" id="rsc1-migrate_from-interval-0s"/>
+            <op name="migrate_to" timeout="20s" interval="0s" id="rsc1-migrate_to-interval-0s"/>
+            <op name="monitor" timeout="20s" interval="10s" id="rsc1-monitor-interval-10s"/>
+            <op name="reload" timeout="20s" interval="0s" id="rsc1-reload-interval-0s"/>
+            <op name="reload-agent" timeout="20s" interval="0s" id="rsc1-reload-agent-interval-0s"/>
+            <op name="start" timeout="20s" interval="0s" id="rsc1-start-interval-0s"/>
+            <op name="stop" timeout="20s" interval="0s" id="rsc1-stop-interval-0s"/>
+          </operations>
+        </primitive>
+        <meta_attributes id="rsc1-clone-meta_attributes">
+          <nvpair id="rsc1-clone-meta_attributes-clone-max" name="clone-max" value="3"/>
+          <nvpair id="rsc1-clone-meta_attributes-clone-node-max" name="clone-node-max" value="2"/>
+          <nvpair id="rsc1-clone-meta_attributes-globally-unique" name="globally-unique" value="true"/>
+          <nvpair id="rsc1-clone-meta_attributes-ordered" name="ordered" value="true"/>
+        </meta_attributes>
+      </clone>
+    </resources>
+    <constraints/>
+    <rsc_defaults>
+      <meta_attributes id="build-resource-defaults">
+        <nvpair id="build-resource-stickiness" name="resource-stickiness" value="1"/>
+      </meta_attributes>
+    </rsc_defaults>
+    <fencing-topology/>
+    <op_defaults>
+      <meta_attributes id="cts-op_defaults-meta">
+        <nvpair id="cts-op_defaults-timeout" name="timeout" value="90s"/>
+      </meta_attributes>
+    </op_defaults>
+  </configuration>
+  <status>
+    <node_state id="2" uname="rhel9-2" in_ccm="true" crmd="online" crm-debug-origin="do_update_resource" join="member" expected="member">
+      <transient_attributes id="2">
+        <instance_attributes id="status-2"/>
+      </transient_attributes>
+      <lrm id="2">
+        <lrm_resources>
+          <lrm_resource id="Fencing" type="fence_xvm" class="stonith">
+            <lrm_rsc_op id="Fencing_last_0" operation_key="Fencing_monitor_0" operation="monitor" crm-debug-origin="build_active_RAs" crm_feature_set="3.11.0" transition-key="12:0:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:7;12:0:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-2" call-id="5" rc-code="7" op-status="0" interval="0" last-rc-change="1629490572" exec-time="2" queue-time="0" op-digest="941b3476806a9088406c91b882052400"/>
+          </lrm_resource>
+          <lrm_resource id="rsc1:0" type="Dummy" class="ocf" provider="pacemaker">
+            <lrm_rsc_op id="rsc1:0_last_0" operation_key="rsc1:0_monitor_0" operation="monitor" crm-debug-origin="do_update_resource" crm_feature_set="3.11.0" transition-key="5:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;5:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-2" call-id="128" rc-code="0" op-status="0" interval="0" last-rc-change="1629495178" exec-time="15" queue-time="0" op-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-force-restart="  state  " op-restart-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-secure-params="  passwd  " op-secure-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8"/>
+            <lrm_rsc_op id="rsc1:0_last_failure_0" operation_key="rsc1:0_monitor_0" operation="monitor" crm-debug-origin="do_update_resource" crm_feature_set="3.11.0" transition-key="5:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;5:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-2" call-id="128" rc-code="0" op-status="0" interval="0" last-rc-change="1629495178" exec-time="15" queue-time="0" op-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8"/>
+          </lrm_resource>
+          <lrm_resource id="rsc1:1" type="Dummy" class="ocf" provider="pacemaker">
+            <lrm_rsc_op id="rsc1:1_last_0" operation_key="rsc1:1_monitor_0" operation="monitor" crm-debug-origin="do_update_resource" crm_feature_set="3.11.0" transition-key="6:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;6:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-2" call-id="132" rc-code="0" op-status="0" interval="0" last-rc-change="1629495178" exec-time="19" queue-time="0" op-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-force-restart="  state  " op-restart-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-secure-params="  passwd  " op-secure-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8"/>
+            <lrm_rsc_op id="rsc1:1_last_failure_0" operation_key="rsc1:1_monitor_0" operation="monitor" crm-debug-origin="do_update_resource" crm_feature_set="3.11.0" transition-key="6:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;6:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-2" call-id="132" rc-code="0" op-status="0" interval="0" last-rc-change="1629495178" exec-time="19" queue-time="0" op-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8"/>
+          </lrm_resource>
+          <lrm_resource id="rsc1:2" type="Dummy" class="ocf" provider="pacemaker">
+            <lrm_rsc_op id="rsc1:2_last_0" operation_key="rsc1:2_monitor_0" operation="monitor" crm-debug-origin="do_update_resource" crm_feature_set="3.11.0" transition-key="3:38:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;3:38:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-2" call-id="136" rc-code="0" op-status="0" interval="0" last-rc-change="1629495178" exec-time="10" queue-time="0" op-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-force-restart="  state  " op-restart-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-secure-params="  passwd  " op-secure-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8"/>
+            <lrm_rsc_op id="rsc1:2_last_failure_0" operation_key="rsc1:2_monitor_0" operation="monitor" crm-debug-origin="do_update_resource" crm_feature_set="3.11.0" transition-key="3:38:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;3:38:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-2" call-id="136" rc-code="0" op-status="0" interval="0" last-rc-change="1629495178" exec-time="10" queue-time="0" op-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8"/>
+          </lrm_resource>
+        </lrm_resources>
+      </lrm>
+    </node_state>
+    <node_state id="1" uname="rhel9-1" in_ccm="true" crmd="online" crm-debug-origin="do_update_resource" join="member" expected="member">
+      <transient_attributes id="1">
+        <instance_attributes id="status-1"/>
+      </transient_attributes>
+      <lrm id="1">
+        <lrm_resources>
+          <lrm_resource id="Fencing" type="fence_xvm" class="stonith">
+            <lrm_rsc_op id="Fencing_last_0" operation_key="Fencing_start_0" operation="start" crm-debug-origin="build_active_RAs" crm_feature_set="3.11.0" transition-key="23:0:0:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;23:0:0:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-1" call-id="6" rc-code="0" op-status="0" interval="0" last-rc-change="1629490572" exec-time="26" queue-time="0" op-digest="941b3476806a9088406c91b882052400"/>
+            <lrm_rsc_op id="Fencing_monitor_120000" operation_key="Fencing_monitor_120000" operation="monitor" crm-debug-origin="build_active_RAs" crm_feature_set="3.11.0" transition-key="24:0:0:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;24:0:0:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-1" call-id="7" rc-code="0" op-status="0" interval="120000" last-rc-change="1629490572" exec-time="26" queue-time="0" op-digest="87d7b49a29a10785abac1c8596750abf"/>
+          </lrm_resource>
+          <lrm_resource id="rsc1:0" type="Dummy" class="ocf" provider="pacemaker">
+            <lrm_rsc_op id="rsc1:0_last_0" operation_key="rsc1:0_monitor_0" operation="monitor" crm-debug-origin="do_update_resource" crm_feature_set="3.11.0" transition-key="2:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;2:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-1" call-id="139" rc-code="0" op-status="0" interval="0" last-rc-change="1629495178" exec-time="16" queue-time="0" op-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-force-restart="  state  " op-restart-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-secure-params="  passwd  " op-secure-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8"/>
+            <lrm_rsc_op id="rsc1:0_last_failure_0" operation_key="rsc1:0_monitor_0" operation="monitor" crm-debug-origin="do_update_resource" crm_feature_set="3.11.0" transition-key="2:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;2:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-1" call-id="139" rc-code="0" op-status="0" interval="0" last-rc-change="1629495178" exec-time="16" queue-time="0" op-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8"/>
+          </lrm_resource>
+          <lrm_resource id="rsc1:1" type="Dummy" class="ocf" provider="pacemaker">
+            <lrm_rsc_op id="rsc1:1_last_0" operation_key="rsc1:1_monitor_0" operation="monitor" crm-debug-origin="do_update_resource" crm_feature_set="3.11.0" transition-key="3:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;3:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-1" call-id="143" rc-code="0" op-status="0" interval="0" last-rc-change="1629495178" exec-time="20" queue-time="0" op-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-force-restart="  state  " op-restart-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-secure-params="  passwd  " op-secure-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8"/>
+            <lrm_rsc_op id="rsc1:1_last_failure_0" operation_key="rsc1:1_monitor_0" operation="monitor" crm-debug-origin="do_update_resource" crm_feature_set="3.11.0" transition-key="3:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:0;3:37:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-1" call-id="143" rc-code="0" op-status="0" interval="0" last-rc-change="1629495178" exec-time="20" queue-time="0" op-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8"/>
+          </lrm_resource>
+          <lrm_resource id="rsc1:2" type="Dummy" class="ocf" provider="pacemaker">
+            <lrm_rsc_op id="rsc1:2_last_0" operation_key="rsc1:2_monitor_0" operation="monitor" crm-debug-origin="do_update_resource" crm_feature_set="3.11.0" transition-key="2:38:7:8f32ab7b-dc07-4b52-b37c-78827732c202" transition-magic="0:7;2:38:7:8f32ab7b-dc07-4b52-b37c-78827732c202" exit-reason="" on_node="rhel9-1" call-id="147" rc-code="7" op-status="0" interval="0" last-rc-change="1629495178" exec-time="5" queue-time="0" op-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-force-restart="  state  " op-restart-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8" op-secure-params="  passwd  " op-secure-digest="f2317cad3d54cec5d7d7aa7d0bf35cf8"/>
+          </lrm_resource>
+        </lrm_resources>
+      </lrm>
+    </node_state>
+  </status>
+</cib>
