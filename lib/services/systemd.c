@@ -74,6 +74,49 @@ systemd_new_method(const char *method)
  */
 
 static DBusConnection* systemd_proxy = NULL;
+static svc__systemd_callback_t systemd_callback = NULL;
+static void *systemd_callback_data = NULL;
+
+/*!
+ * \internal
+ * \brief Register a function to be called when a systemd job completes
+ *
+ * If the application registers a callback using this function, and calls
+ * services__systemd_dispatch() in its main loop, then the callback will be
+ * called whenever a systemd JobRemoved signal is received. This allows
+ * applications to be notified when a systemd action completes, rather than just
+ * when it is initiated.
+ *
+ * \param[in] callback   Function to call when jobs complete
+ * \param[in] user_data  Data to pass to the callback
+ *
+ * \note The callback must be registered before any other systemd function
+ *       is called (i.e. at start-up is best).
+ */
+void
+services__set_systemd_callback(svc__systemd_callback_t callback,
+                               void *user_data)
+{
+    systemd_callback = callback;
+    systemd_callback_data = user_data;
+}
+
+/*!
+ * \internal
+ * \brief Process available DBus messages
+ *
+ * \note If an application wants to be notified when a systemd job completes,
+ *       it must register a callback at start-up, and call this function in its
+ *       main loop.
+ */
+void
+services__systemd_dispatch(void)
+{
+    if (systemd_callback == NULL) {
+        return;
+    }
+    /* @TODO: DBusWatch and DBusTimeout */
+}
 
 static inline DBusPendingCall *
 systemd_send(DBusMessage *msg,
@@ -133,6 +176,90 @@ systemd_call_simple_method(const char *method)
     return reply;
 }
 
+/*!
+ * \internal
+ * \brief Process a DBus message, calling the systemd callback if appropriate
+ *
+ * \param[in] connection  DBus connection that produced the message
+ * \param[in] message     Message to be processed
+ * \param[in] user_data   Data to pass to systemd callback
+ */
+static DBusHandlerResult
+filter_systemd_signals(DBusConnection *connection, DBusMessage *message,
+                       void *user_data)
+{
+    CRM_CHECK((connection != NULL) && (message != NULL),
+              return DBUS_HANDLER_RESULT_NOT_YET_HANDLED);
+
+    crm_trace("Checking D-Bus message %s.%s() on %s",
+              dbus_message_get_interface(message),
+              dbus_message_get_member(message),
+              dbus_message_get_path(message));
+
+    if (dbus_message_is_signal(message, BUS_NAME_MANAGER, "JobRemoved")) {
+        uint32_t job_id;
+        const char *bus_path, *result;
+        DBusError error;
+
+        dbus_error_init(&error);
+        if (!dbus_message_get_args(message, &error,
+                                   DBUS_TYPE_UINT32, &job_id,
+                                   DBUS_TYPE_OBJECT_PATH, &bus_path,
+                                   DBUS_TYPE_STRING, &result,
+                                   DBUS_TYPE_INVALID)) {
+            crm_err("Could not interpret systemd DBus signal: %s "
+                    CRM_XS " (%s)", error.message, error.name);
+            dbus_error_free(&error);
+        } else {
+            systemd_callback((int) job_id, bus_path, result, user_data);
+        }
+    }
+    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+}
+
+/*!
+ * \internal
+ * \brief Listen for systemd DBus signals
+ *
+ * \return Standard Pacemaker return code
+ */
+static int
+subscribe_to_signals(void)
+{
+    DBusError error;
+    DBusMessage *reply;
+
+    // Tell DBus to report signals from systemd
+    dbus_error_init(&error);
+    dbus_bus_add_match(systemd_proxy,
+                       "type='signal',sender='" BUS_NAME "',interface='"
+                       BUS_NAME_MANAGER "',path='" BUS_PATH "'",
+                       &error);
+    if (dbus_error_is_set(&error)) {
+        crm_err("Could not listen for systemd DBus signals: %s " CRM_XS " (%s)",
+                error.message, error.name);
+        return ECOMM;
+    }
+
+    // Set a message filter to look for signals from systemd
+    if (!dbus_connection_add_filter(systemd_proxy, filter_systemd_signals,
+                                    systemd_callback_data,
+                                    /* DBusFreeFunction */ NULL)) {
+        crm_err("Could not add DBus filter for systemd signals");
+        return ECOMM;
+    }
+
+    // Tell systemd to issue signals
+    reply = systemd_call_simple_method("Subscribe");
+    if (reply == NULL) {
+        crm_err("Could not subscribe to systemd DBus signals");
+        return ECOMM;
+    }
+    dbus_message_unref(reply);
+
+    return pcmk_rc_ok;
+}
+
 static gboolean
 systemd_init(void)
 {
@@ -150,11 +277,14 @@ systemd_init(void)
     if (need_init) {
         need_init = 0;
         systemd_proxy = pcmk_dbus_connect();
+
+        if ((systemd_proxy != NULL) && (systemd_callback != NULL)
+            && (subscribe_to_signals() != pcmk_rc_ok)) {
+            pcmk_dbus_disconnect(systemd_proxy);
+            systemd_proxy = NULL;
+       }
     }
-    if (systemd_proxy == NULL) {
-        return FALSE;
-    }
-    return TRUE;
+    return (systemd_proxy != NULL);
 }
 
 static inline char *
