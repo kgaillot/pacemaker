@@ -239,6 +239,10 @@ TESTS = [
         SchedulerTest("ordered-set-basic-startup", "Constraint set with default order settings"),
         SchedulerTest("ordered-set-natural", "Allow natural set ordering"),
         SchedulerTest("order-wrong-kind", "Order (error)"),
+        SchedulerTest("before-unmanaged-started",
+                      "Block 'first' from starting if 'then' can't restart"),
+        SchedulerTest("before-unmanaged-stopped",
+                      "Allow 'first' to start even if 'then' can't"),
     ]),
     SchedulerTestGroup([
         SchedulerTest("coloc-loop", "Colocation - loop"),
