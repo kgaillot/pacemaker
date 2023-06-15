@@ -384,6 +384,32 @@ inverse_ordering(const char *id, enum pe_order_kind kind,
                                     ordering_symmetric_inverse);
     pcmk__order_resource_actions(rsc_then, inverted_then,
                                  rsc_first, inverted_first, flags);
+
+    /* In normal circumstances, given "start A then start B," restarts are
+     * handled by these orderings:
+     *   stop  B -> stop  A (the inverted ordering added above)
+     *   stop  A -> start A (normal restart ordering for A)
+     *   start A -> start B (the non-inverted ordering)
+     *
+     * However, that might not be sufficient if a mandatory ordering is added to
+     * the configuration when the resources are already active, unmanaged, etc.
+     *
+     * For example, A could be stopped and B could be active when the ordering
+     * is added. In this situation, B needs to stop, then A needs to start, then
+     * B needs to start. Since A doesn't need to stop, the inverse ordering
+     * above is irrelevant. However, if B is unmanaged (explicitly or due to
+     * failure, maintenance mode, etc.), we need to block the A start, otherwise
+     * we lose the knowledge that B needs to restart.
+     *
+     * Therefore, for mandatory orderings, order the inverted 'then' action
+     * before the normal 'first' action -- but only if both are already
+     * required.
+     */
+    if (kind == pe_order_kind_mandatory) {
+        pcmk__order_resource_actions(rsc_then, inverted_then,
+                                     rsc_first, action_first,
+                                     pe_order_optional);
+    }
 }
 
 static void
