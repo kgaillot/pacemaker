@@ -34,6 +34,7 @@
 "PrimitiveResource1_monitor_10000 domu1" [ style=dashed color="red" fontcolor="black"]
 "PrimitiveResource1_start_0 domu1" -> "PrimitiveResource1_monitor_10000 domu1" [ style = dashed]
 "PrimitiveResource1_start_0 domu1" [ style=dashed color="red" fontcolor="black"]
+"PrimitiveResource1_stop_0 domu1" -> "CloneResource2_start_0" [ style = dashed]
 "PrimitiveResource1_stop_0 domu1" -> "CloneResource2_stop_0" [ style = bold]
 "PrimitiveResource1_stop_0 domu1" -> "PrimitiveResource1_start_0 domu1" [ style = dashed]
 "PrimitiveResource1_stop_0 domu1" [ style=bold color="green" fontcolor="black"]

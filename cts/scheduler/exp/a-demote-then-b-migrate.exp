@@ -417,6 +417,9 @@
     </action_set>
     <inputs>
       <trigger>
+        <pseudo_event id="35" operation="notified" operation_key="ms1_confirmed-post_notify_demoted_0"/>
+      </trigger>
+      <trigger>
         <rsc_op id="36" operation="stop" operation_key="rsc2_stop_0" on_node="node1" on_node_uuid="node1"/>
       </trigger>
       <trigger>

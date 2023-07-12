@@ -1,6 +1,7 @@
  digraph "g" {
 "depends_start_0 paul" [ style=bold color="green" fontcolor="black"]
 "depends_stop_0 paul" -> "depends_start_0 paul" [ style = bold]
+"depends_stop_0 paul" -> "group_1_start_0" [ style = bold]
 "depends_stop_0 paul" -> "group_1_stop_0" [ style = bold]
 "depends_stop_0 paul" [ style=bold color="green" fontcolor="black"]
 "group_1_running_0" -> "depends_start_0 paul" [ style = bold]

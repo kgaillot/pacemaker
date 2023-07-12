@@ -26,6 +26,7 @@
 "B-clone_stop_0" -> "B_stop_0 rhel7-auto3" [ style = bold]
 "B-clone_stop_0" -> "B_stop_0 rhel7-auto4" [ style = bold]
 "B-clone_stop_0" [ style=bold color="green" fontcolor="orange"]
+"B-clone_stopped_0" -> "A-clone_start_0" [ style = dashed]
 "B-clone_stopped_0" -> "A-clone_stop_0" [ style = bold]
 "B-clone_stopped_0" -> "B-clone_start_0" [ style = dashed]
 "B-clone_stopped_0" [ style=bold color="green" fontcolor="orange"]

@@ -83,6 +83,9 @@
       <trigger>
         <pseudo_event id="21" operation="stopped" operation_key="FAKE1-clone_stopped_0"/>
       </trigger>
+      <trigger>
+        <pseudo_event id="31" operation="stopped" operation_key="FAKE2-clone_stopped_0"/>
+      </trigger>
     </inputs>
   </synapse>
   <synapse id="6">

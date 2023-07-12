@@ -38,6 +38,9 @@
       <trigger>
         <pseudo_event id="19" operation="start" operation_key="clone-2_start_0"/>
       </trigger>
+      <trigger>
+        <rsc_op id="23" operation="stop" operation_key="child-3:2_stop_0" internal_operation_key="child-3:0_stop_0" on_node="pcmk-1" on_node_uuid="1"/>
+      </trigger>
     </inputs>
   </synapse>
   <synapse id="3">
@@ -107,6 +110,9 @@
     <inputs>
       <trigger>
         <pseudo_event id="22" operation="stopped" operation_key="clone-2_stopped_0"/>
+      </trigger>
+      <trigger>
+        <pseudo_event id="32" operation="stopped" operation_key="clone-3_stopped_0"/>
       </trigger>
     </inputs>
   </synapse>
@@ -191,6 +197,9 @@
       </pseudo_event>
     </action_set>
     <inputs>
+      <trigger>
+        <rsc_op id="2" operation="stop" operation_key="dummy_stop_0" on_node="pcmk-1" on_node_uuid="1"/>
+      </trigger>
       <trigger>
         <pseudo_event id="20" operation="running" operation_key="clone-2_running_0"/>
       </trigger>

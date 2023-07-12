@@ -17,7 +17,6 @@ Transition Summary:
   * Start      ip_nfs             (                        sambuca.linbit )
 
 Executing Cluster Transition:
-  * Resource action: ip_float_right  start on sambuca.linbit
   * Pseudo action:   ms_drbd_float_pre_notify_stop_0
   * Resource action: drbd_float:0    notify on sambuca.linbit
   * Pseudo action:   ms_drbd_float_confirmed-pre_notify_stop_0
@@ -27,6 +26,7 @@ Executing Cluster Transition:
   * Pseudo action:   ms_drbd_float_post_notify_stopped_0
   * Pseudo action:   ms_drbd_float_confirmed-post_notify_stopped_0
   * Pseudo action:   ms_drbd_float_pre_notify_start_0
+  * Resource action: ip_float_right  start on sambuca.linbit
   * Pseudo action:   ms_drbd_float_confirmed-pre_notify_start_0
   * Pseudo action:   ms_drbd_float_start_0
   * Resource action: drbd_float:0    start on sambuca.linbit

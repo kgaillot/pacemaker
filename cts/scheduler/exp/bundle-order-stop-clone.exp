@@ -232,9 +232,6 @@
     </action_set>
     <inputs>
       <trigger>
-        <pseudo_event id="68" operation="start" operation_key="galera-bundle_start_0"/>
-      </trigger>
-      <trigger>
         <pseudo_event id="81" operation="stopped" operation_key="galera-bundle-master_stopped_0"/>
       </trigger>
     </inputs>
@@ -411,18 +408,6 @@
     <inputs>
       <trigger>
         <pseudo_event id="79" operation="running" operation_key="galera-bundle-master_running_0"/>
-      </trigger>
-    </inputs>
-  </synapse>
-  <synapse id="34">
-    <action_set>
-      <pseudo_event id="68" operation="start" operation_key="galera-bundle_start_0">
-        <attributes CRM_meta_timeout="20000" />
-      </pseudo_event>
-    </action_set>
-    <inputs>
-      <trigger>
-        <pseudo_event id="71" operation="stopped" operation_key="galera-bundle_stopped_0"/>
       </trigger>
     </inputs>
   </synapse>

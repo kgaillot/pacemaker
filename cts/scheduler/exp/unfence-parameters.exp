@@ -61,6 +61,9 @@
         <pseudo_event id="16" operation="start" operation_key="dlm-clone_start_0"/>
       </trigger>
       <trigger>
+        <rsc_op id="20" operation="stop" operation_key="clvmd_stop_0" internal_operation_key="clvmd:0_stop_0" on_node="virt-1" on_node_uuid="1"/>
+      </trigger>
+      <trigger>
         <crm_event id="28" operation="stonith" operation_key="stonith-virt-4-reboot" on_node="virt-4" on_node_uuid="4"/>
       </trigger>
     </inputs>
@@ -100,6 +103,9 @@
       </trigger>
       <trigger>
         <pseudo_event id="16" operation="start" operation_key="dlm-clone_start_0"/>
+      </trigger>
+      <trigger>
+        <rsc_op id="20" operation="stop" operation_key="clvmd_stop_0" internal_operation_key="clvmd:0_stop_0" on_node="virt-1" on_node_uuid="1"/>
       </trigger>
       <trigger>
         <crm_event id="28" operation="stonith" operation_key="stonith-virt-4-reboot" on_node="virt-4" on_node_uuid="4"/>
@@ -179,6 +185,9 @@
       </trigger>
       <trigger>
         <pseudo_event id="19" operation="stopped" operation_key="dlm-clone_stopped_0"/>
+      </trigger>
+      <trigger>
+        <pseudo_event id="27" operation="stopped" operation_key="clvmd-clone_stopped_0"/>
       </trigger>
     </inputs>
   </synapse>

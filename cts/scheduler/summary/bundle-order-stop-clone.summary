@@ -49,16 +49,15 @@ Executing Cluster Transition:
   * Pseudo action:   galera-bundle-master_stop_0
   * Resource action: galera:0        stop on galera-bundle-0
   * Pseudo action:   galera-bundle-master_stopped_0
+  * Pseudo action:   galera-bundle-master_start_0
   * Resource action: galera-bundle-0 stop on metal-1
+  * Pseudo action:   galera-bundle-master_running_0
   * Resource action: galera-bundle-docker-0 stop on metal-1
   * Pseudo action:   galera-bundle_stopped_0
-  * Pseudo action:   galera-bundle_start_0
+  * Pseudo action:   galera-bundle_running_0
   * Pseudo action:   storage-clone_stop_0
-  * Pseudo action:   galera-bundle-master_start_0
   * Resource action: storage:0       stop on metal-1
   * Pseudo action:   storage-clone_stopped_0
-  * Pseudo action:   galera-bundle-master_running_0
-  * Pseudo action:   galera-bundle_running_0
   * Pseudo action:   storage-clone_post_notify_stopped_0
   * Resource action: storage:1       notify on metal-2
   * Resource action: storage:2       notify on metal-3

@@ -1264,7 +1264,19 @@
         <rsc_op id="2" operation="monitor" operation_key="Libvirtd:0_monitor_0" on_node="hypatia-corosync.nevis.columbia.edu" on_node_uuid="hypatia-corosync.nevis.columbia.edu"/>
       </trigger>
       <trigger>
+        <rsc_op id="19" operation="monitor" operation_key="KVM-guest_monitor_0" on_node="hypatia-corosync.nevis.columbia.edu" on_node_uuid="hypatia-corosync.nevis.columbia.edu"/>
+      </trigger>
+      <trigger>
+        <rsc_op id="20" operation="monitor" operation_key="Proxy_monitor_0" on_node="hypatia-corosync.nevis.columbia.edu" on_node_uuid="hypatia-corosync.nevis.columbia.edu"/>
+      </trigger>
+      <trigger>
         <rsc_op id="21" operation="monitor" operation_key="Libvirtd:0_monitor_0" on_node="orestes-corosync.nevis.columbia.edu" on_node_uuid="orestes-corosync.nevis.columbia.edu"/>
+      </trigger>
+      <trigger>
+        <rsc_op id="38" operation="monitor" operation_key="KVM-guest_monitor_0" on_node="orestes-corosync.nevis.columbia.edu" on_node_uuid="orestes-corosync.nevis.columbia.edu"/>
+      </trigger>
+      <trigger>
+        <rsc_op id="39" operation="monitor" operation_key="Proxy_monitor_0" on_node="orestes-corosync.nevis.columbia.edu" on_node_uuid="orestes-corosync.nevis.columbia.edu"/>
       </trigger>
       <trigger>
         <pseudo_event id="231" operation="running" operation_key="FilesystemClone_running_0"/>

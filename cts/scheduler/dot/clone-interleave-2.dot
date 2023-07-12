@@ -23,6 +23,7 @@
 "clone-3_stopped_0" -> "clone-3_start_0" [ style = bold]
 "clone-3_stopped_0" [ style=bold color="green" fontcolor="orange"]
 "dummy_start_0 pcmk-1" [ style=bold color="green" fontcolor="black"]
+"dummy_stop_0 pcmk-1" -> "clone-3_start_0" [ style = bold]
 "dummy_stop_0 pcmk-1" -> "clone-3_stop_0" [ style = bold]
 "dummy_stop_0 pcmk-1" -> "dummy_start_0 pcmk-1" [ style = bold]
 "dummy_stop_0 pcmk-1" [ style=bold color="green" fontcolor="black"]

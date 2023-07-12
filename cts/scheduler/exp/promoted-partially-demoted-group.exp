@@ -60,6 +60,9 @@
       <trigger>
         <pseudo_event id="28" operation="running" operation_key="cdev-pool-0-iscsi-export_running_0"/>
       </trigger>
+      <trigger>
+        <pseudo_event id="67" operation="demoted" operation_key="ms-cdev-pool-0-iscsi-vips-fw_demoted_0"/>
+      </trigger>
     </inputs>
   </synapse>
   <synapse id="4">
@@ -211,7 +214,13 @@
     </action_set>
     <inputs>
       <trigger>
+        <pseudo_event id="20" operation="stopped" operation_key="cdev-pool-0-iscsi-vips_stopped_0"/>
+      </trigger>
+      <trigger>
         <pseudo_event id="30" operation="stopped" operation_key="cdev-pool-0-iscsi-export_stopped_0"/>
+      </trigger>
+      <trigger>
+        <pseudo_event id="67" operation="demoted" operation_key="ms-cdev-pool-0-iscsi-vips-fw_demoted_0"/>
       </trigger>
       <trigger>
         <pseudo_event id="97" operation="notified" operation_key="ms-cdev-pool-0-drbd_confirmed-post_notify_promoted_0"/>
@@ -830,6 +839,9 @@
       </pseudo_event>
     </action_set>
     <inputs>
+      <trigger>
+        <pseudo_event id="30" operation="stopped" operation_key="cdev-pool-0-iscsi-export_stopped_0"/>
+      </trigger>
       <trigger>
         <pseudo_event id="95" operation="notified" operation_key="ms-cdev-pool-0-drbd_confirmed-pre_notify_promote_0"/>
       </trigger>

@@ -45,6 +45,7 @@
 "group_nfs_stop_0" -> "resource_ipaddr1_single_stop_0 power720-2" [ style = bold]
 "group_nfs_stop_0" -> "resource_nfsserver_single_stop_0 power720-2" [ style = bold]
 "group_nfs_stop_0" [ style=bold color="green" fontcolor="orange"]
+"group_nfs_stopped_0" -> "export_home_ocfs2_clone_set_start_0" [ style = bold]
 "group_nfs_stopped_0" -> "group_nfs_start_0" [ style = bold]
 "group_nfs_stopped_0" [ style=bold color="green" fontcolor="orange"]
 "resource_ipaddr1_single_monitor_0 power720-1" -> "group_nfs_stopped_0" [ style = bold]

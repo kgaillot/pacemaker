@@ -364,6 +364,9 @@
     </action_set>
     <inputs>
       <trigger>
+        <rsc_op id="39" operation="stop" operation_key="galera-bundle-docker-0_stop_0" on_node="undercloud" on_node_uuid="1"/>
+      </trigger>
+      <trigger>
         <pseudo_event id="86" operation="promote" operation_key="redis-bundle-master_promote_0"/>
       </trigger>
     </inputs>
@@ -504,7 +507,11 @@
         <attributes CRM_meta_timeout="20000" />
       </pseudo_event>
     </action_set>
-    <inputs/>
+    <inputs>
+      <trigger>
+        <pseudo_event id="46" operation="stopped" operation_key="galera-bundle_stopped_0"/>
+      </trigger>
+    </inputs>
   </synapse>
   <synapse id="37" priority="1000000">
     <action_set>
@@ -524,7 +531,11 @@
         <attributes CRM_meta_timeout="20000" />
       </pseudo_event>
     </action_set>
-    <inputs/>
+    <inputs>
+      <trigger>
+        <pseudo_event id="46" operation="stopped" operation_key="galera-bundle_stopped_0"/>
+      </trigger>
+    </inputs>
   </synapse>
   <synapse id="39" priority="1000000">
     <action_set>
@@ -600,6 +611,10 @@
         <attributes CRM_meta_timeout="20000" />
       </pseudo_event>
     </action_set>
-    <inputs/>
+    <inputs>
+      <trigger>
+        <pseudo_event id="46" operation="stopped" operation_key="galera-bundle_stopped_0"/>
+      </trigger>
+    </inputs>
   </synapse>
 </transition_graph>

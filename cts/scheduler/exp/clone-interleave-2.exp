@@ -127,6 +127,9 @@
     </action_set>
     <inputs>
       <trigger>
+        <rsc_op id="1" operation="stop" operation_key="dummy_stop_0" on_node="pcmk-1" on_node_uuid="1"/>
+      </trigger>
+      <trigger>
         <pseudo_event id="31" operation="stopped" operation_key="clone-3_stopped_0"/>
       </trigger>
     </inputs>

@@ -112,6 +112,9 @@
       <trigger>
         <pseudo_event id="17" operation="stopped" operation_key="FAKECLONE-clone_stopped_0"/>
       </trigger>
+      <trigger>
+        <rsc_op id="18" operation="stop" operation_key="FAKE_stop_0" on_node="c7auto4" on_node_uuid="4"/>
+      </trigger>
     </inputs>
   </synapse>
   <synapse id="9">

@@ -90,6 +90,7 @@
 "group_mysql_stop_0" [ style=bold color="green" fontcolor="orange"]
 "group_mysql_stopped_0" -> "group_mysql_start_0" [ style = bold]
 "group_mysql_stopped_0" -> "ms_drbd_mysql_demote_0" [ style = bold]
+"group_mysql_stopped_0" -> "ms_drbd_mysql_promote_0" [ style = bold]
 "group_mysql_stopped_0" [ style=bold color="green" fontcolor="orange"]
 "group_nfs-common:1_stop_0" -> "group_nfs-common:1_stopped_0" [ style = bold]
 "group_nfs-common:1_stop_0" -> "nfs-common:1_stop_0 wc02" [ style = bold]

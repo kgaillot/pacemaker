@@ -95,6 +95,9 @@
       <trigger>
         <pseudo_event id="7" operation="stopped" operation_key="myclone-clone_stopped_0"/>
       </trigger>
+      <trigger>
+        <rsc_op id="8" operation="stop" operation_key="vm_stop_0" on_node="f20node1" on_node_uuid="1"/>
+      </trigger>
     </inputs>
   </synapse>
   <synapse id="7">

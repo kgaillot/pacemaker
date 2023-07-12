@@ -77,6 +77,9 @@
       <trigger>
         <pseudo_event id="17" operation="stopped" operation_key="FAKECLONE-clone_stopped_0"/>
       </trigger>
+      <trigger>
+        <pseudo_event id="24" operation="stopped" operation_key="FAKECLONE2-clone_stopped_0"/>
+      </trigger>
     </inputs>
   </synapse>
   <synapse id="6">

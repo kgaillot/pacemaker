@@ -37,6 +37,9 @@
     </action_set>
     <inputs>
       <trigger>
+        <rsc_op id="1" operation="monitor" operation_key="webserver_monitor_0" on_node="18node2" on_node_uuid="18node2" router_node="18builder"/>
+      </trigger>
+      <trigger>
         <rsc_op id="2" operation="monitor" operation_key="nfs_mount_monitor_0" on_node="18node2" on_node_uuid="18node2" router_node="18builder"/>
       </trigger>
       <trigger>

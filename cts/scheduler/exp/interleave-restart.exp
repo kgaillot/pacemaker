@@ -289,6 +289,12 @@
       <trigger>
         <pseudo_event id="24" operation="notified" operation_key="evmscloneset_confirmed-pre_notify_start_0"/>
       </trigger>
+      <trigger>
+        <pseudo_event id="46" operation="notified" operation_key="imagestorecloneset_confirmed-post_notify_stopped_0"/>
+      </trigger>
+      <trigger>
+        <pseudo_event id="62" operation="notified" operation_key="configstorecloneset_confirmed-post_notify_stopped_0"/>
+      </trigger>
     </inputs>
   </synapse>
   <synapse id="20" priority="1000000">

@@ -27,6 +27,7 @@
 "PROMOTABLE_RSC_A_confirmed-post_notify_demoted_0" -> "PROMOTABLE_RSC_A_pre_notify_stop_0" [ style = bold]
 "PROMOTABLE_RSC_A_confirmed-post_notify_demoted_0" [ style=bold color="green" fontcolor="orange"]
 "PROMOTABLE_RSC_A_confirmed-post_notify_running_0" [ style=dashed color="red" fontcolor="orange"]
+"PROMOTABLE_RSC_A_confirmed-post_notify_stopped_0" -> "NATIVE_RSC_B_start_0 <none>" [ style = dashed]
 "PROMOTABLE_RSC_A_confirmed-post_notify_stopped_0" -> "NATIVE_RSC_B_stop_0 fc16-builder2" [ style = bold]
 "PROMOTABLE_RSC_A_confirmed-post_notify_stopped_0" -> "PROMOTABLE_RSC_A_pre_notify_start_0" [ style = dashed]
 "PROMOTABLE_RSC_A_confirmed-post_notify_stopped_0" [ style=bold color="green" fontcolor="orange"]

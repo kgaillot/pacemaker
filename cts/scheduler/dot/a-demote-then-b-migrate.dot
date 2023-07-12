@@ -7,6 +7,7 @@
 "ms1_confirmed-post_notify_demoted_0" -> "rsc1:0_monitor_5000 node2" [ style = bold]
 "ms1_confirmed-post_notify_demoted_0" -> "rsc1:1_monitor_10000 node1" [ style = bold]
 "ms1_confirmed-post_notify_demoted_0" -> "rsc2_migrate_to_0 node1" [ style = bold]
+"ms1_confirmed-post_notify_demoted_0" -> "rsc2_start_0 node2" [ style = bold]
 "ms1_confirmed-post_notify_demoted_0" -> "rsc2_stop_0 node1" [ style = bold]
 "ms1_confirmed-post_notify_demoted_0" [ style=bold color="green" fontcolor="orange"]
 "ms1_confirmed-post_notify_promoted_0" -> "rsc1:0_monitor_5000 node2" [ style = bold]

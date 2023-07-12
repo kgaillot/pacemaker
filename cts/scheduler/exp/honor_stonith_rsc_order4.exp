@@ -33,6 +33,9 @@
     </action_set>
     <inputs>
       <trigger>
+        <rsc_op id="1" operation="monitor" operation_key="S_A_monitor_0" on_node="fc16-builder" on_node_uuid="fc16-builder"/>
+      </trigger>
+      <trigger>
         <rsc_op id="2" operation="monitor" operation_key="S_B_monitor_0" on_node="fc16-builder" on_node_uuid="fc16-builder"/>
       </trigger>
     </inputs>

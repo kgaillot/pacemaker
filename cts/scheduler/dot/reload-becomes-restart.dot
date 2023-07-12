@@ -20,6 +20,7 @@
 "cl-rsc2_stop_0" -> "cl-rsc2_stopped_0" [ style = bold]
 "cl-rsc2_stop_0" -> "rsc2_stop_0 node1" [ style = bold]
 "cl-rsc2_stop_0" [ style=bold color="green" fontcolor="orange"]
+"cl-rsc2_stopped_0" -> "cl-rsc1_start_0" [ style = bold]
 "cl-rsc2_stopped_0" -> "cl-rsc2_start_0" [ style = bold]
 "cl-rsc2_stopped_0" [ style=bold color="green" fontcolor="orange"]
 "rsc1:0_monitor_0 node2" -> "cl-rsc1_start_0" [ style = bold]

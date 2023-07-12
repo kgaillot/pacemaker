@@ -25,6 +25,7 @@
 "vm_migrate_to_0 f20node1" -> "vm_migrate_from_0 f20node2" [ style = dashed]
 "vm_migrate_to_0 f20node1" [ style=dashed color="red" fontcolor="black"]
 "vm_start_0 f20node2" [ style=bold color="green" fontcolor="black"]
+"vm_stop_0 f20node1" -> "myclone-clone_start_0" [ style = bold]
 "vm_stop_0 f20node1" -> "myclone-clone_stop_0" [ style = bold]
 "vm_stop_0 f20node1" -> "vm_start_0 f20node2" [ style = bold]
 "vm_stop_0 f20node1" [ style=bold color="green" fontcolor="black"]

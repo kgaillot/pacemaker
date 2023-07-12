@@ -6,7 +6,11 @@
         <attributes CRM_meta_on_node="sambuca.linbit" CRM_meta_on_node_uuid="sambuca.linbit" CRM_meta_timeout="20000" cidr_netmask="24"  ip="192.168.42.124" nic="eth0"/>
       </rsc_op>
     </action_set>
-    <inputs/>
+    <inputs>
+      <trigger>
+        <pseudo_event id="16" operation="notified" operation_key="ms_drbd_float_confirmed-post_notify_stopped_0"/>
+      </trigger>
+    </inputs>
   </synapse>
   <synapse id="1" priority="1000000">
     <action_set>

@@ -10,6 +10,7 @@
 "MIXED_GROUP_start_0" -> "MIXED_GROUP_running_0" [ style = bold]
 "MIXED_GROUP_start_0" -> "S_B_start_0 fc16-builder" [ style = bold]
 "MIXED_GROUP_start_0" [ style=bold color="green" fontcolor="orange"]
+"S_A_monitor_0 fc16-builder" -> "MIXED_GROUP_start_0" [ style = bold]
 "S_A_monitor_0 fc16-builder" -> "S_A_start_0 fc16-builder" [ style = bold]
 "S_A_monitor_0 fc16-builder" [ style=bold color="green" fontcolor="black"]
 "S_A_start_0 fc16-builder" [ style=bold color="green" fontcolor="black"]

@@ -15,5 +15,6 @@
 "nfs_mount_start_0 18node2" [ style=bold color="green" fontcolor="black"]
 "vg_tags_dup_monitor_0 18node2" [ style=bold color="green" fontcolor="black"]
 "vg_tags_monitor_0 18node2" [ style=bold color="green" fontcolor="black"]
+"webserver_monitor_0 18node2" -> "nfs_mount_start_0 18node2" [ style = bold]
 "webserver_monitor_0 18node2" [ style=bold color="green" fontcolor="black"]
 }
