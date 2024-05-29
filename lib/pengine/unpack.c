@@ -1776,7 +1776,7 @@ determine_remote_online_status(pcmk_scheduler_t *scheduler,
     if (launcher != NULL) {
         node_type = "Guest";
         if (pcmk__list_of_1(rsc->priv->active_nodes)) {
-            host = rsc->priv->active_nodes->data;
+            host = launcher->priv->active_nodes->data;
         }
     }
 
