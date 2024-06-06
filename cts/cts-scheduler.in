@@ -1041,6 +1041,8 @@ TESTS = [
         SchedulerTest("bundle-interleave-start", "Interleave bundle starts"),
         SchedulerTest("bundle-interleave-promote", "Interleave bundle promotes"),
         SchedulerTest("bundle-nested-colocation", "Colocation of nested connection resources"),
+        SchedulerTest("bundle-nested-on-fail-block",
+                      "Bundle on failed remote with on-fail=block"),
         SchedulerTest("bundle-order-fencing",
                       "Order pseudo bundle fencing after parent node fencing if both are happening"),
         SchedulerTest("bundle-probe-order-1", "order 1"),

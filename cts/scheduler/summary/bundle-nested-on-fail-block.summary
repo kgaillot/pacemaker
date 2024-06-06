@@ -1,0 +1,75 @@
+Using the original execution date of: 2017-07-14 08:50:25Z
+0 of 16 resource instances DISABLED and 1 BLOCKED from further action due to failure
+
+Current cluster status:
+  * Node List:
+    * RemoteNode overcloud-rabbit-0: OFFLINE (maintenance)
+    * Online: [ overcloud-controller-0 overcloud-controller-1 overcloud-controller-2 overcloud-galera-0 overcloud-galera-1 overcloud-galera-2 ]
+    * RemoteOnline: [ overcloud-rabbit-1 overcloud-rabbit-2 ]
+    * GuestOnline: [ rabbitmq-bundle-0 rabbitmq-bundle-1 rabbitmq-bundle-2 ]
+
+  * Full List of Resources:
+    * fence-device	(stonith:fence_imaginary):	 Started overcloud-galera-0
+    * overcloud-rabbit-0	(ocf:pacemaker:remote):	 FAILED overcloud-controller-0 (blocked)
+    * overcloud-rabbit-1	(ocf:pacemaker:remote):	 Started overcloud-controller-1
+    * overcloud-rabbit-2	(ocf:pacemaker:remote):	 Started overcloud-controller-2
+    * Container bundle set: rabbitmq-bundle [192.168.24.1:8787/tripleoupstream/centos-binary-rabbitmq:latest]:
+      * rabbitmq-bundle-0	(ocf:heartbeat:rabbitmq-cluster):	 Started overcloud-rabbit-0
+      * rabbitmq-bundle-1	(ocf:heartbeat:rabbitmq-cluster):	 Started overcloud-rabbit-1
+      * rabbitmq-bundle-2	(ocf:heartbeat:rabbitmq-cluster):	 Started overcloud-rabbit-2
+    * Container bundle set: galera-bundle [192.168.24.1:8787/tripleoupstream/centos-binary-mariadb:latest]:
+      * galera-bundle-docker-0	(ocf:heartbeat:docker):	 Started overcloud-galera-0
+      * galera-bundle-docker-1	(ocf:heartbeat:docker):	 Started overcloud-galera-1
+      * galera-bundle-docker-2	(ocf:heartbeat:docker):	 Started overcloud-galera-2
+
+Transition Summary:
+  * Stop       rabbitmq-bundle-0     ( overcloud-controller-0 )  due to colocation with overcloud-rabbit-0
+  * Stop       rabbitmq:0            (      rabbitmq-bundle-0 )  due to unrunnable rabbitmq-bundle-0 start
+
+Executing Cluster Transition:
+  * Pseudo action:   rabbitmq-bundle-clone_pre_notify_stop_0
+  * Pseudo action:   maintenance_nodes
+  * Pseudo action:   rabbitmq-bundle_stop_0
+  * Pseudo action:   rabbitmq-bundle_start_0
+  * Resource action: rabbitmq        notify on rabbitmq-bundle-0
+  * Resource action: rabbitmq        notify on rabbitmq-bundle-1
+  * Resource action: rabbitmq        notify on rabbitmq-bundle-2
+  * Pseudo action:   rabbitmq-bundle-clone_confirmed-pre_notify_stop_0
+  * Pseudo action:   rabbitmq-bundle-clone_stop_0
+  * Resource action: rabbitmq        stop on rabbitmq-bundle-0
+  * Pseudo action:   rabbitmq-bundle-clone_stopped_0
+  * Resource action: rabbitmq-bundle-0 stop on overcloud-controller-0
+  * Pseudo action:   rabbitmq-bundle-clone_post_notify_stopped_0
+  * Resource action: rabbitmq        notify on rabbitmq-bundle-1
+  * Resource action: rabbitmq        notify on rabbitmq-bundle-2
+  * Pseudo action:   rabbitmq-bundle-clone_confirmed-post_notify_stopped_0
+  * Pseudo action:   rabbitmq-bundle-clone_pre_notify_start_0
+  * Pseudo action:   rabbitmq-bundle_stopped_0
+  * Pseudo action:   rabbitmq-bundle-clone_confirmed-pre_notify_start_0
+  * Pseudo action:   rabbitmq-bundle-clone_start_0
+  * Pseudo action:   rabbitmq-bundle-clone_running_0
+  * Pseudo action:   rabbitmq-bundle-clone_post_notify_running_0
+  * Pseudo action:   rabbitmq-bundle-clone_confirmed-post_notify_running_0
+  * Pseudo action:   rabbitmq-bundle_running_0
+Using the original execution date of: 2017-07-14 08:50:25Z
+
+Revised Cluster Status:
+  * Node List:
+    * RemoteNode overcloud-rabbit-0: OFFLINE (maintenance)
+    * Online: [ overcloud-controller-0 overcloud-controller-1 overcloud-controller-2 overcloud-galera-0 overcloud-galera-1 overcloud-galera-2 ]
+    * RemoteOnline: [ overcloud-rabbit-1 overcloud-rabbit-2 ]
+    * GuestOnline: [ rabbitmq-bundle-1 rabbitmq-bundle-2 ]
+
+  * Full List of Resources:
+    * fence-device	(stonith:fence_imaginary):	 Started overcloud-galera-0
+    * overcloud-rabbit-0	(ocf:pacemaker:remote):	 FAILED overcloud-controller-0 (blocked)
+    * overcloud-rabbit-1	(ocf:pacemaker:remote):	 Started overcloud-controller-1
+    * overcloud-rabbit-2	(ocf:pacemaker:remote):	 Started overcloud-controller-2
+    * Container bundle set: rabbitmq-bundle [192.168.24.1:8787/tripleoupstream/centos-binary-rabbitmq:latest]:
+      * rabbitmq-bundle-0	(ocf:heartbeat:rabbitmq-cluster):	 Stopped overcloud-rabbit-0
+      * rabbitmq-bundle-1	(ocf:heartbeat:rabbitmq-cluster):	 Started overcloud-rabbit-1
+      * rabbitmq-bundle-2	(ocf:heartbeat:rabbitmq-cluster):	 Started overcloud-rabbit-2
+    * Container bundle set: galera-bundle [192.168.24.1:8787/tripleoupstream/centos-binary-mariadb:latest]:
+      * galera-bundle-docker-0	(ocf:heartbeat:docker):	 Started overcloud-galera-0
+      * galera-bundle-docker-1	(ocf:heartbeat:docker):	 Started overcloud-galera-1
+      * galera-bundle-docker-2	(ocf:heartbeat:docker):	 Started overcloud-galera-2
