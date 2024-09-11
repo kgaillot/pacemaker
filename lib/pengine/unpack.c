@@ -1752,6 +1752,29 @@ determine_online_status_fencing(pcmk_scheduler_t *scheduler,
     return (when_member > 0);
 }
 
+/*!
+ * \internal
+ * \brief Check whether a guest node's host is failed
+ *
+ * \param[in] host  If not NULL, guest node's host
+ *
+ * \return \c true if \p host is failed, otherwise \c false
+ */
+static bool
+host_failed(pcmk_node_t *host)
+{
+    if (host == NULL) {
+        return false; // Not a guest node
+    }
+    if (host->details->online) {
+        return false; // Not failed
+    }
+    if (host->details->unclean) {
+        return true; // Failed
+    }
+    return false;
+}
+
 static void
 determine_remote_online_status(pcmk_scheduler_t *scheduler,
                                pcmk_node_t *this_node)
@@ -1815,10 +1838,9 @@ determine_remote_online_status(pcmk_scheduler_t *scheduler,
         this_node->details->online = FALSE;
         pcmk__clear_node_flags(this_node, pcmk__node_remote_reset);
 
-    } else if (host && (host->details->online == FALSE)
-               && host->details->unclean) {
-        crm_trace("Guest node %s UNCLEAN because host is unclean",
-                  this_node->priv->id);
+    } else if (host_failed(host)) {
+        crm_trace("Guest node %s is UNCLEAN because host %s is failed",
+                  pcmk__node_name(this_node), pcmk__node_name(host));
         this_node->details->online = FALSE;
         pcmk__set_node_flags(this_node, pcmk__node_remote_reset);
 
