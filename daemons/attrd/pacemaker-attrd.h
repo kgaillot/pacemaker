@@ -99,7 +99,7 @@ extern crm_trigger_t *attrd_config_read;
 
 void attrd_lrmd_disconnect(void);
 gboolean attrd_read_options(gpointer user_data);
-int attrd_send_attribute_alert(const char *node, int nodeid,
+int attrd_send_attribute_alert(const char *node, const char *node_xml_id,
                                const char *attr, const char *value);
 
 // Elections

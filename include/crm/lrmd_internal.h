@@ -27,7 +27,7 @@ extern "C" {
 int lrmd__new(lrmd_t **api, const char *nodename, const char *server, int port);
 
 int lrmd_send_attribute_alert(lrmd_t *lrmd, const GList *alert_list,
-                              const char *node, uint32_t nodeid,
+                              const char *node, const char *node_xml_id,
                               const char *attr_name, const char *attr_value);
 int lrmd_send_node_alert(lrmd_t *lrmd, const GList *alert_list,
                          const char *node, uint32_t nodeid, const char *state);

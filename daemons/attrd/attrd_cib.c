@@ -445,10 +445,16 @@ send_alert_attributes_value(attribute_t *a, GHashTable *t)
     g_hash_table_iter_init(&vIter, t);
 
     while (g_hash_table_iter_next(&vIter, NULL, (gpointer *) & at)) {
-        rc = attrd_send_attribute_alert(at->nodename, at->nodeid,
+        // This assumes XML ID is node ID as string (as with Corosync)
+        char *node_xml_id = crm_strdup_printf("%" PRIu32, at->nodeid);
+
+        rc = attrd_send_attribute_alert(at->nodename, node_xml_id,
                                         a->id, at->current);
-        crm_trace("Sent alerts for %s[%s]=%s: nodeid=%d rc=%d",
-                  a->id, at->nodename, at->current, at->nodeid, rc);
+        crm_trace("Sent alerts for %s[%s]=%s with node XML ID %s "
+                  "(%s agents failed)",
+                  a->id, at->nodename, at->current, node_xml_id,
+                  ((rc == 0)? "no" : ((rc == -1)? "some" : "all")));
+        free(node_xml_id);
     }
 }
 

@@ -220,7 +220,7 @@ exec_alert_list(lrmd_t *lrmd, const GList *alert_list,
  * \param[in,out] lrmd        Executor connection to use
  * \param[in]     alert_list  List of alert agents to execute
  * \param[in]     node        Name of node with attribute change
- * \param[in]     nodeid      Node ID of node with attribute change
+ * \param[in]     node_xml_id Node's XML ID in CIB
  * \param[in]     attr_name   Name of attribute that changed
  * \param[in]     attr_value  New value of attribute that changed
  *
@@ -230,7 +230,7 @@ exec_alert_list(lrmd_t *lrmd, const GList *alert_list,
  */
 int
 lrmd_send_attribute_alert(lrmd_t *lrmd, const GList *alert_list,
-                          const char *node, uint32_t nodeid,
+                          const char *node, const char *node_xml_id,
                           const char *attr_name, const char *attr_value)
 {
     int rc = pcmk_ok;
@@ -241,7 +241,7 @@ lrmd_send_attribute_alert(lrmd_t *lrmd, const GList *alert_list,
     }
 
     params = alert_key2param(params, PCMK__alert_key_node, node);
-    params = alert_key2param_int(params, PCMK__alert_key_nodeid, nodeid);
+    params = alert_key2param(params, PCMK__alert_key_nodeid, node_xml_id);
     params = alert_key2param(params, PCMK__alert_key_attribute_name, attr_name);
     params = alert_key2param(params, PCMK__alert_key_attribute_value,
                              attr_value);

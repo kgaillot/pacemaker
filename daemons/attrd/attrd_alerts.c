@@ -125,12 +125,12 @@ attrd_read_options(gpointer user_data)
 }
 
 int
-attrd_send_attribute_alert(const char *node, int nodeid,
+attrd_send_attribute_alert(const char *node, const char *node_xml_id,
                            const char *attr, const char *value)
 {
     if (attrd_alert_list == NULL) {
         return pcmk_ok;
     }
     return lrmd_send_attribute_alert(attrd_lrmd_connect(), attrd_alert_list,
-                                     node, nodeid, attr, value);
+                                     node, node_xml_id, attr, value);
 }

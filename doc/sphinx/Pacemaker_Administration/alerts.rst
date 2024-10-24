@@ -198,8 +198,8 @@ Writing an Alert Agent
    |                           |   single:environment variable; CRM_alert_nodeid                |
    |                           |   single:CRM_alert_nodeid                                      |
    |                           |                                                                |
-   |                           | ID of node whose status changed (provided with ``node`` alerts |
-   |                           | only)                                                          |
+   |                           | XML ID in CIB of node whose status changed (provided with      |
+   |                           | ``node`` alerts only)                                          |
    +---------------------------+----------------------------------------------------------------+
    | CRM_alert_rc              | .. index::                                                     |
    |                           |   single:environment variable; CRM_alert_rc                    |
@@ -299,3 +299,8 @@ Special concerns when writing alert agents:
   configuration errors, but if some user can modify the CIB without having
   |CRM_DAEMON_USER| access to the cluster nodes, it is a potential security
   concern as well, to avoid the possibility of code injection.
+
+* Node attribute alerts are currently considered experimental. Do not rely on
+  the agent being called for all attribute changes, being called only once for
+  a single attribute change, or having the correct `CRM_alert_nodeid` value
+  set.
