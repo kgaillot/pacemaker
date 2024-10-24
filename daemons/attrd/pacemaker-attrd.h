@@ -252,4 +252,9 @@ bool attrd_request_has_sync_point(xmlNode *xml);
 
 extern gboolean stand_alone;
 
+// Node utilities (from attrd_nodes.c)
+const char *attrd_get_node_xml_id(const char *node_name);
+void attrd_set_node_xml_id(const char *node_name, const char *node_xml_id);
+void attrd_forget_node_xml_id(const char *node_name);
+
 #endif /* PACEMAKER_ATTRD__H */
