@@ -232,12 +232,18 @@ attrd_client_refresh(pcmk__request_t *request)
 static void
 handle_missing_host(xmlNode *xml)
 {
-    const char *host = crm_element_value(xml, PCMK__XA_ATTR_HOST);
+    if (crm_element_value(xml, PCMK__XA_ATTR_HOST) == NULL) {
+        crm_trace("Inferring local node %s", attrd_cluster->priv->node_name);
 
-    if (host == NULL) {
-        crm_trace("Inferring host");
+        // @WIP This?
         pcmk__xe_add_node(xml, attrd_cluster->priv->node_name,
                           attrd_cluster->priv->node_id);
+#if 0
+        // @WIP or this?
+        crm_xml_add(xml, PCMK__XA_ATTR_HOST, attrd_cluster->priv->node_name);
+        crm_xml_add(xml, PCMK__XA_ATTR_HOST_ID,
+                    attrd_cluster->priv->NEW_FIELD_FOR_XML_ID);
+#endif
     }
 }
 

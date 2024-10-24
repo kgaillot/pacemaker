@@ -10,7 +10,6 @@
 #include <crm_internal.h>
 
 #include <errno.h>
-#include <inttypes.h>   // PRIu32
 #include <stdbool.h>
 #include <stdlib.h>
 #include <glib.h>
@@ -445,16 +444,12 @@ send_alert_attributes_value(attribute_t *a, GHashTable *t)
     g_hash_table_iter_init(&vIter, t);
 
     while (g_hash_table_iter_next(&vIter, NULL, (gpointer *) & at)) {
-        // This assumes XML ID is node ID as string (as with Corosync)
-        char *node_xml_id = crm_strdup_printf("%" PRIu32, at->nodeid);
-
-        rc = attrd_send_attribute_alert(at->nodename, node_xml_id,
+        rc = attrd_send_attribute_alert(at->nodename, at->node_xml_id,
                                         a->id, at->current);
         crm_trace("Sent alerts for %s[%s]=%s with node XML ID %s "
                   "(%s agents failed)",
-                  a->id, at->nodename, at->current, node_xml_id,
+                  a->id, at->nodename, at->current, at->node_xml_id,
                   ((rc == 0)? "no" : ((rc == -1)? "some" : "all")));
-        free(node_xml_id);
     }
 }
 
@@ -463,7 +458,7 @@ set_alert_attribute_value(GHashTable *t, attribute_value_t *v)
 {
     attribute_value_t *a_v = pcmk__assert_alloc(1, sizeof(attribute_value_t));
 
-    a_v->nodeid = v->nodeid;
+    a_v->node_xml_id = pcmk__str_copy(v->node_xml_id);
     a_v->nodename = pcmk__str_copy(v->nodename);
     a_v->current = pcmk__str_copy(v->current);
 
@@ -546,33 +541,40 @@ write_attribute(attribute_t *a, bool ignore_delay)
     while (g_hash_table_iter_next(&iter, NULL, (gpointer *) &v)) {
         const char *node_xml_id = NULL;
 
+        // Private attributes (or any in standalone mode) are not written to CIB
+        if (stand_alone || pcmk_is_set(a->flags, attrd_attr_is_private)) {
+            private_updates++;
+            continue;
+        }
+
         // Try to get the XML ID used for the node in the CIB
         if (pcmk_is_set(v->flags, attrd_value_remote)) {
             // A Pacemaker Remote node's XML ID is the same as its name
             node_xml_id = v->nodename;
 
         } else {
-            /* Get cluster node XML IDs from the peer caches.
+            /* Get cluster node XML IDs from the peer caches. We do this even if
+             * an ID was previously known, because it might have changed, but
+             * use any previous ID as a fallback.
+             *
              * This will create a cluster node cache entry if none exists.
              */
-            pcmk__node_status_t *peer = pcmk__get_node(v->nodeid, v->nodename,
-                                                       NULL,
+            pcmk__node_status_t *peer = pcmk__get_node(/* @WIP v->nodeid? */ 0,
+                                                       v->nodename, NULL,
                                                        pcmk__node_search_any);
 
             node_xml_id = pcmk__cluster_node_uuid(peer);
+            if (node_xml_id == NULL) {
+                node_xml_id = v->node_xml_id;
+            }
 
+            // @WIP needed?
             // Remember peer's node ID if we're just now learning it
             if ((peer->cluster_layer_id != 0) && (v->nodeid == 0)) {
                 crm_trace("Learned ID %" PRIu32 " for node %s",
                           peer->cluster_layer_id, v->nodename);
                 v->nodeid = peer->cluster_layer_id;
             }
-        }
-
-        /* If this is a private attribute, no update needs to be sent */
-        if (stand_alone || pcmk_is_set(a->flags, attrd_attr_is_private)) {
-            private_updates++;
-            continue;
         }
 
         // Defer write if this is a cluster node that's never been seen
@@ -582,6 +584,15 @@ write_attribute(attribute_t *a, bool ignore_delay)
                        "is unknown (will retry if learned)",
                        a->id, v->nodename, v->current);
             continue;
+        }
+
+        // Remember the XML ID and let peers know it
+        if (!pcmk__str_eq(v->node_xml_id, node_xml_id, pcmk__str_none)) {
+            crm_trace("Setting %s[%s] node XML ID to %s (was %s)",
+                      a->id, v->nodename, node_xml_id,
+                      pcmk__s(v->node_xml_id, "unknown"));
+            pcmk__str_update(&(v->node_xml_id), node_xml_id);
+            attrd_broadcast_value(a, v);
         }
 
         // Update this value as part of the CIB transaction we're building

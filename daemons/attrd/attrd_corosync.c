@@ -209,6 +209,8 @@ attrd_peer_change_cb(enum pcmk__node_update kind, pcmk__node_status_t *peer,
     }
 }
 
+#if 0
+// @WIP needed?
 static void
 record_peer_nodeid(attribute_value_t *v, const char *host)
 {
@@ -221,6 +223,7 @@ record_peer_nodeid(attribute_value_t *v, const char *host)
         attrd_write_attributes(attrd_write_changed);
     }
 }
+#endif
 
 #define readable_value(rv_v) pcmk__s((rv_v)->current, "(unset)")
 
@@ -235,6 +238,7 @@ update_attr_on_host(attribute_t *a, const pcmk__node_status_t *peer,
     int is_remote = 0;
     bool changed = false;
     attribute_value_t *v = NULL;
+    const char *node_xml_id = NULL;
 
     // Create entry for value if not already existing
     v = g_hash_table_lookup(a->values, host);
@@ -243,6 +247,18 @@ update_attr_on_host(attribute_t *a, const pcmk__node_status_t *peer,
 
         v->nodename = pcmk__str_copy(host);
         g_hash_table_replace(a->values, v->nodename, v);
+    }
+
+    node_xml_id = crm_element_value(xml, PCMK__XA_ATTR_HOST_ID);
+    if ((node_xml_id != NULL)
+        && !pcmk__str_eq(node_xml_id, v->node_xml_id, pcmk__str_none)) {
+        crm_trace("Learned %s[%s] node XML ID is %s (was %s)",
+                  a->id, v->nodename, node_xml_id,
+                  pcmk__s(v->node_xml_id, "unknown"));
+        pcmk__str_update(&(v->node_xml_id), node_xml_id);
+        if (attrd_election_won()) {
+            attrd_write_attributes(attrd_write_changed);
+        }
     }
 
     // If value is for a Pacemaker Remote node, remember that
@@ -270,11 +286,12 @@ update_attr_on_host(attribute_t *a, const pcmk__node_status_t *peer,
 
     } else if (changed) {
         crm_notice("Setting %s[%s]%s%s: %s -> %s "
-                   QB_XS " from %s with %s write delay",
+                   QB_XS " from %s with %s write delay and node XML ID %s",
                    attr, host, a->set_type ? " in " : "",
                    pcmk__s(a->set_type, ""), readable_value(v),
                    pcmk__s(value, "(unset)"), peer->name,
-                   (a->timeout_ms == 0)? "no" : pcmk__readable_interval(a->timeout_ms));
+                   (a->timeout_ms == 0)? "no" : pcmk__readable_interval(a->timeout_ms),
+                   pcmk__s(v->node_xml_id, "unknown"));
         pcmk__str_update(&v->current, value);
         attrd_set_attr_flags(a, attrd_attr_changed);
 
@@ -318,13 +335,6 @@ update_attr_on_host(attribute_t *a, const pcmk__node_status_t *peer,
 
     // This allows us to later detect local values that peer doesn't know about
     attrd_set_value_flags(v, attrd_value_from_peer);
-
-    /* If this is a cluster node whose node ID we are learning, remember it */
-    if ((v->nodeid == 0) && !pcmk_is_set(v->flags, attrd_value_remote)
-        && (crm_element_value_int(xml, PCMK__XA_ATTR_HOST_ID,
-                                  (int*)&v->nodeid) == 0) && (v->nodeid > 0)) {
-        record_peer_nodeid(v, host);
-    }
 }
 
 static void

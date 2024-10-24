@@ -314,8 +314,15 @@ attrd_broadcast_protocol(void)
     crm_xml_add(attrd_op, PCMK__XA_ATTR_NAME, CRM_ATTR_PROTOCOL);
     crm_xml_add(attrd_op, PCMK__XA_ATTR_VALUE, ATTRD_PROTOCOL_VERSION);
     crm_xml_add_int(attrd_op, PCMK__XA_ATTR_IS_PRIVATE, 1);
+    // @WIP This?
     pcmk__xe_add_node(attrd_op, attrd_cluster->priv->node_name,
                       attrd_cluster->priv->node_id);
+#if 0
+    // @WIP Or this?
+    crm_xml_add(attrd_op, PCMK__XA_ATTR_HOST, attrd_cluster->priv->node_name);
+    crm_xml_add(attrd_op, PCMK__XA_ATTR_HOST_ID,
+                attrd_cluster->priv->NEW_FIELD_FOR_XML_ID);
+#endif
 
     crm_debug("Broadcasting attrd protocol version %s for node %s",
               ATTRD_PROTOCOL_VERSION, attrd_cluster->priv->node_name);
