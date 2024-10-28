@@ -1001,7 +1001,7 @@ pcmk__get_node(unsigned int id, const char *uname, const char *uuid,
 
     if (node->xml_id == NULL) {
         if (uuid == NULL) {
-            uuid = pcmk__cluster_node_uuid(node);
+            uuid = pcmk__cluster_get_xml_id(node);
         }
 
         if (uuid) {
