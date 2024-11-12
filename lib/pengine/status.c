@@ -28,12 +28,7 @@
 void
 pe_free_working_set(pcmk_scheduler_t *scheduler)
 {
-    if (scheduler != NULL) {
-        pcmk_reset_scheduler(scheduler);
-        free(scheduler->priv->local_node_name);
-        free(scheduler->priv);
-        free(scheduler);
-    }
+    pcmk_free_scheduler(scheduler);
 }
 
 #define XPATH_DEPRECATED_RULES                          \
@@ -265,7 +260,7 @@ pe_find_node_id(const GList *nodes, const char *id)
  *       to statically declared or directly allocated) should be used with the
  *       functions in this library, to allow for future extensions to the
  *       data type. The caller is responsible for freeing the memory with
- *       pe_free_working_set() when the instance is no longer needed.
+ *       pcmk_free_scheduler() when the instance is no longer needed.
  */
 pcmk_scheduler_t *
 pe_new_working_set(void)
